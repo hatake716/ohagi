@@ -78,101 +78,64 @@ class LayoutRepository(context: Context) {
                 dock + List(LayoutState.DOCK_SLOT_COUNT - dock.size) { null }
             else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
         }
-        val columnsFixed = columns
-            .map { it.copy(tiles = it.tiles.take(2), widthPreset = it.widthPreset.coerceIn(0, 3)) }
-            .filter { it.tiles.isNotEmpty() }
-        return copy(columns = columnsFixed, dock = dockFixed)
+        val panesFixed = panes
+            .distinctBy { it.app }
+            .take(LayoutState.MAX_PANES)
+        return copy(panes = panesFixed, dock = dockFixed)
     }
 
-    // ---- ワークスペース操作 ----
+    // ---- ワークスペース(タイリング)操作 ----
 
     /**
-     * 指定位置の直後に新しいカラムを挿入する。afterIndex が null または範囲外なら末尾。
-     * 生成したタイルの id を返す(フリーフォーム起動でタイル位置を待つために使う)。
+     * アプリをタイリングに追加する。
+     * - 既に開いているアプリなら何もしない(そのペインへフォーカスは呼び出し側で行う)。
+     * - 満杯([MAX_PANES] 枚)なら、最も古いペイン(先頭)を押し出して末尾に追加する。
+     * 追加(または既存)ペインの id を返す。
      */
-    fun addColumnAfter(afterIndex: Int?, app: AppRef): String {
-        val tileId = newId()
-        update { state ->
-            val column = WorkColumn(id = newId(), tiles = listOf(Tile(tileId, app)))
-            val insertAt = when {
-                afterIndex == null -> state.columns.size
-                afterIndex < 0 -> 0
-                afterIndex >= state.columns.size -> state.columns.size
-                else -> afterIndex + 1
+    fun addPane(app: AppRef): String {
+        val existing = state.value.panes.firstOrNull { it.app == app }
+        if (existing != null) return existing.id
+        val paneId = newId()
+        update { s ->
+            if (s.panes.any { it.app == app }) return@update s
+            val pane = Pane(paneId, app)
+            val panes = if (s.panes.size >= LayoutState.MAX_PANES) {
+                s.panes.drop(1) + pane
+            } else {
+                s.panes + pane
             }
-            state.copy(
-                columns = state.columns.toMutableList().apply { add(insertAt, column) }
-            )
+            s.copy(panes = panes)
         }
-        return tileId
+        return paneId
     }
 
-    /**
-     * カラムにタイルを追加して分割する(最大 2 タイル)。atStart = true で先頭(上/左)に挿入。
-     * 生成したタイルの id を返す(満杯で追加できない場合も id は返るが無効)。
-     */
-    fun addTileToColumn(columnId: String, app: AppRef, atStart: Boolean): String {
-        val tileId = newId()
-        update { state ->
-            state.copy(columns = state.columns.map { column ->
-                if (column.id != columnId || column.tiles.size >= 2) column
-                else {
-                    val tile = Tile(tileId, app)
-                    column.copy(
-                        tiles = if (atStart) listOf(tile) + column.tiles
-                        else column.tiles + tile
-                    )
-                }
-            })
-        }
-        return tileId
+    /** ペインを閉じる(タイリングから外す)。 */
+    fun removePane(paneId: String) {
+        update { s -> s.copy(panes = s.panes.filterNot { it.id == paneId }) }
     }
 
-    /** タイルを削除する。カラムが空になったらカラムごと消える。 */
-    fun removeTile(columnId: String, tileId: String) {
-        update { state ->
-            state.copy(columns = state.columns.mapNotNull { column ->
-                if (column.id != columnId) column
-                else {
-                    val rest = column.tiles.filterNot { it.id == tileId }
-                    if (rest.isEmpty()) null else column.copy(tiles = rest)
-                }
-            })
+    /** すべてのペインを閉じる。 */
+    fun clearPanes() {
+        update { s -> s.copy(panes = emptyList()) }
+    }
+
+    /** ペインをマスター(先頭)に昇格させる。 */
+    fun promotePane(paneId: String) {
+        update { s ->
+            val pane = s.panes.firstOrNull { it.id == paneId } ?: return@update s
+            s.copy(panes = listOf(pane) + s.panes.filterNot { it.id == paneId })
         }
     }
 
-    /** カラム内の 2 タイルの位置を入れ替える。 */
-    fun swapTiles(columnId: String) {
-        update { state ->
-            state.copy(columns = state.columns.map { column ->
-                if (column.id != columnId || column.tiles.size != 2) column
-                else column.copy(tiles = column.tiles.reversed())
-            })
-        }
-    }
-
-    /** カラムを左右に移動する(delta = -1 / +1)。 */
-    fun moveColumn(columnId: String, delta: Int) {
-        update { state ->
-            val index = state.columns.indexOfFirst { it.id == columnId }
-            val target = index + delta
-            if (index < 0 || target < 0 || target >= state.columns.size) state
-            else {
-                val list = state.columns.toMutableList()
-                val column = list.removeAt(index)
-                list.add(target, column)
-                state.copy(columns = list)
-            }
-        }
-    }
-
-    /** カラム幅プリセットを niri 同様に 1/3 → 1/2 → 2/3 → フル → 1/3… と循環させる。 */
-    fun cycleWidth(columnId: String) {
-        update { state ->
-            state.copy(columns = state.columns.map { column ->
-                if (column.id != columnId) column
-                else column.copy(widthPreset = (column.widthPreset + 1) % 4)
-            })
+    /** 2 つのペインの位置を入れ替える。 */
+    fun swapPanes(idA: String, idB: String) {
+        update { s ->
+            val ia = s.panes.indexOfFirst { it.id == idA }
+            val ib = s.panes.indexOfFirst { it.id == idB }
+            if (ia < 0 || ib < 0) return@update s
+            val list = s.panes.toMutableList()
+            val tmp = list[ia]; list[ia] = list[ib]; list[ib] = tmp
+            s.copy(panes = list)
         }
     }
 
@@ -255,10 +218,7 @@ class LayoutRepository(context: Context) {
     /** アンインストールされたアプリへの参照をレイアウトから取り除く。 */
     fun pruneMissingPackages(installedPackages: Set<String>) {
         update { state ->
-            val columns = state.columns.mapNotNull { column ->
-                val tiles = column.tiles.filter { it.app.packageName in installedPackages }
-                if (tiles.isEmpty()) null else column.copy(tiles = tiles)
-            }
+            val panes = state.panes.filter { it.app.packageName in installedPackages }
             val dock = state.dock.map { item ->
                 when (item) {
                     null -> null
@@ -268,7 +228,7 @@ class LayoutRepository(context: Context) {
                         item.copy(apps = item.apps.filter { it.packageName in installedPackages })
                 }
             }
-            state.copy(columns = columns, dock = dock)
+            state.copy(panes = panes, dock = dock)
         }
     }
 }

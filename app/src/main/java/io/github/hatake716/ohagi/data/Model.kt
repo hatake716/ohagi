@@ -11,23 +11,14 @@ data class AppRef(
     val className: String,
 )
 
-/** ワークスペース上の 1 タイル(= 1 アプリ) */
-@Serializable
-data class Tile(
-    val id: String,
-    val app: AppRef,
-)
-
 /**
- * ワークスペースの 1 カラム。niri のカラムに相当する。
- * タイルは 1〜2 個。2 個のときは縦画面で上下、横画面で左右に分割表示される。
- * widthPreset は niri の幅プリセットに対応: 0 = 1/3, 1 = 1/2, 2 = 2/3, 3 = フル幅
+ * タイリング配置された 1 枚のペイン(= 1 アプリ)。
+ * niri のような横スクロールは廃止し、1 画面固定・最大 3 分割のタイリングとする。
  */
 @Serializable
-data class WorkColumn(
+data class Pane(
     val id: String,
-    val tiles: List<Tile>,
-    val widthPreset: Int = 2,
+    val app: AppRef,
 )
 
 /** ドックのスロットに入るもの: アプリ単体またはフォルダ */
@@ -42,15 +33,20 @@ sealed interface DockItem {
     data class DockFolder(val name: String, val apps: List<AppRef>) : DockItem
 }
 
-/** 永続化されるレイアウト全体 */
+/**
+ * 永続化されるレイアウト全体。
+ * panes: 現在タイリング表示しているアプリ(最大 [MAX_PANES] 枚)。先頭がマスター(主ペイン)。
+ * dock: 下部ドックの 4 スロット。
+ */
 @Serializable
 data class LayoutState(
-    val columns: List<WorkColumn> = emptyList(),
+    val panes: List<Pane> = emptyList(),
     val dock: List<DockItem?> = List(DOCK_SLOT_COUNT) { null },
-    val version: Int = 1,
+    val version: Int = 2,
 ) {
     companion object {
         const val DOCK_SLOT_COUNT = 4
+        const val MAX_PANES = 3
     }
 }
 

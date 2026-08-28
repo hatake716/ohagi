@@ -31,9 +31,7 @@ class Graph(context: Context) {
                     val visible = apps.mapTo(mutableSetOf()) { it.ref.packageName }
                     val layout = layoutRepository.state.value
                     val referenced = buildSet {
-                        layout.columns.forEach { column ->
-                            column.tiles.forEach { add(it.app.packageName) }
-                        }
+                        layout.panes.forEach { add(it.app.packageName) }
                         layout.dock.forEach { item ->
                             when (item) {
                                 is io.github.hatake716.ohagi.data.DockItem.DockApp ->

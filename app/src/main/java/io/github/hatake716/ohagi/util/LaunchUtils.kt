@@ -60,7 +60,7 @@ object LaunchUtils {
      * freeform になるよう setLaunchWindowingMode をリフレクションで呼ぶ
      * (Taskbar 等の実績ある手法。greylist API のため失敗時は静かに諦めて通常起動)。
      */
-    fun launchInBounds(context: Context, ref: AppRef, bounds: Rect) {
+    fun launchInBounds(context: Context, ref: AppRef, bounds: Rect, reposition: Boolean = false) {
         val options = ActivityOptions.makeBasic().setLaunchBounds(bounds)
         if (hiddenApiReady) {
             try {
@@ -71,10 +71,15 @@ object LaunchUtils {
                 // 端末/OS がリフレクションを拒否した場合は launchBounds のみに任せる
             }
         }
+        // reposition=true のときは既存タスクを作り直して bounds を再適用する。
+        // Android は起動後のウィンドウ移動を通常アプリに許さないため、
+        // 再タイリング時は CLEAR_TASK で開き直すことで新しいタイル位置へ移す。
+        var flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        if (reposition) flags = flags or Intent.FLAG_ACTIVITY_CLEAR_TASK
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
             .setComponent(ComponentName(ref.packageName, ref.className))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .addFlags(flags)
         try {
             context.startActivity(intent, options.toBundle())
         } catch (_: Exception) {
