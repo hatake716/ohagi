@@ -149,7 +149,7 @@ class AppRepository(private val context: Context) {
             }
         }
         return try {
-            val bitmap = drawable.toBitmap(width = ICON_SIZE_PX, height = ICON_SIZE_PX).asImageBitmap()
+            val bitmap = renderRoundedIcon(drawable).asImageBitmap()
             synchronized(iconCache) { iconCache.put(key, bitmap) }
             bitmap
         } catch (_: Exception) {
@@ -157,7 +157,48 @@ class AppRepository(private val context: Context) {
         }
     }
 
+    /**
+     * アイコンを iPhone 風の角丸矩形にレンダリングする。
+     *
+     * アダプティブアイコンは OS がそのまま描くと端末の形状マスク(Pixel は円形)が
+     * 適用され、四隅が透明になってしまう。そこで前景+背景を自前で角丸矩形キャンバスに
+     * 描き、円形マスクを回避して統一された角丸にする。
+     * レガシー(非アダプティブ)アイコンは元のビットマップを角丸クリップで整える。
+     */
+    private fun renderRoundedIcon(drawable: Drawable): android.graphics.Bitmap {
+        val size = ICON_SIZE_PX
+        val bitmap = android.graphics.Bitmap.createBitmap(
+            size, size, android.graphics.Bitmap.Config.ARGB_8888,
+        )
+        val canvas = android.graphics.Canvas(bitmap)
+        val radius = size * ICON_CORNER_RATIO
+        val clip = android.graphics.Path().apply {
+            addRoundRect(
+                android.graphics.RectF(0f, 0f, size.toFloat(), size.toFloat()),
+                radius, radius, android.graphics.Path.Direction.CW,
+            )
+        }
+        canvas.clipPath(clip)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            drawable is android.graphics.drawable.AdaptiveIconDrawable
+        ) {
+            // アダプティブアイコンの前景/背景は本来セーフゾーンより 1/9 ずつ外へはみ出す。
+            // キャンバスより一回り大きい bounds を与えて中央のセーフゾーンが枠に収まるようにする。
+            val inset = (size / 9f).toInt()
+            val b = android.graphics.Rect(-inset, -inset, size + inset, size + inset)
+            drawable.background?.apply { bounds = b; draw(canvas) }
+            drawable.foreground?.apply { bounds = b; draw(canvas) }
+        } else {
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+        }
+        return bitmap
+    }
+
     private companion object {
         const val ICON_SIZE_PX = 192
+        // AppIcon 側の角丸比率(size*0.2237f)と揃える。
+        const val ICON_CORNER_RATIO = 0.2237f
     }
 }

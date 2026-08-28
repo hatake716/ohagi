@@ -128,13 +128,40 @@ class DragController {
         }
         val hit = targets.values
             .firstOrNull { it !is DropTarget.Trash && it.bounds.contains(fingerPos) }
-            ?: return null
-        if (crossRegionAllowed) return hit
-        return when (origin) {
-            is DragOrigin.Home -> hit as? DropTarget.HomeCell
-            is DragOrigin.Dock -> hit as? DropTarget.DockSlot
-            else -> null
+        if (hit != null) {
+            if (crossRegionAllowed) return hit
+            return when (origin) {
+                is DragOrigin.Home -> hit as? DropTarget.HomeCell
+                is DragOrigin.Dock -> hit as? DropTarget.DockSlot
+                else -> null
+            }
         }
+        // 直下に無い場合: ドロワー発(新規設置)など跨ぎ許可時は最寄りセルへスナップする。
+        // ドロワーは全画面でホームセルが見えず、セルの隙間/パディングに落ちて null に
+        // なりやすいため、指に最も近いセル(一定距離内)を採用する。
+        if (crossRegionAllowed) {
+            return nearestCell(NEAREST_SNAP_PX)
+        }
+        return null
+    }
+
+    /** fingerPos に中心が最も近い HomeCell/DockSlot を返す(maxDistPx 以内)。 */
+    private fun nearestCell(maxDistPx: Float): DropTarget? {
+        var best: DropTarget? = null
+        var bestDist = Float.MAX_VALUE
+        for (t in targets.values) {
+            if (t is DropTarget.Trash) continue
+            val cx = t.bounds.center.x
+            val cy = t.bounds.center.y
+            val dx = cx - fingerPos.x
+            val dy = cy - fingerPos.y
+            val d = dx * dx + dy * dy
+            if (d < bestDist) {
+                bestDist = d
+                best = t
+            }
+        }
+        return if (bestDist <= maxDistPx * maxDistPx) best else null
     }
 
     fun reset() {
@@ -144,6 +171,12 @@ class DragController {
         draggingDockItem = null
         crossRegionAllowed = false
         cellSize = Offset.Zero
+    }
+
+    private companion object {
+        // 直下にセルが無いとき最寄りセルへスナップする最大距離(px)。
+        // ホームセルの間隔より少し大きめ(セル約1個分)にして、隙間/パディングでの取りこぼしを防ぐ。
+        const val NEAREST_SNAP_PX = 220f
     }
 }
 
