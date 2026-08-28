@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -113,9 +114,11 @@ private fun DockSlot(
     modifier: Modifier = Modifier,
 ) {
     val graph = LocalGraph.current
-    // TalkBack 向けのスロット説明(アプリ名/フォルダ名/空きスロット)
+    // TalkBack 向けのスロット説明(アプリ名/フォルダ名/空きスロット)。
+    // アプリ一覧の読込完了に追従してラベルを再解決する。
+    val apps by graph.appRepository.apps.collectAsState()
     val description = when (item) {
-        is DockItem.DockApp -> remember(item) { graph.appRepository.labelOf(item.app) }
+        is DockItem.DockApp -> remember(item, apps) { graph.appRepository.labelOf(item.app) }
         is DockItem.DockFolder -> item.name
         null -> stringResource(R.string.dock_slot_empty)
     }

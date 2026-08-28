@@ -34,6 +34,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -131,7 +132,9 @@ private fun FolderAppCell(
     onRemove: () -> Unit,
 ) {
     val graph = LocalGraph.current
-    val label = remember(app) { graph.appRepository.labelOf(app) }
+    // アプリ一覧の読込完了に追従してラベルを再解決する
+    val apps = graph.appRepository.apps.collectAsState().value
+    val label = remember(app, apps) { graph.appRepository.labelOf(app) }
     var menuOpen by remember { mutableStateOf(false) }
 
     val interactionSource = remember { MutableInteractionSource() }

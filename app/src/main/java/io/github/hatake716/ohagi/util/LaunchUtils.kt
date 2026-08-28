@@ -1,11 +1,14 @@
 package io.github.hatake716.ohagi.util
 
 import android.app.Activity
+import android.app.ActivityOptions
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -15,6 +18,69 @@ import io.github.hatake716.ohagi.data.AppRef
 import kotlinx.coroutines.delay
 
 object LaunchUtils {
+
+    /**
+     * setLaunchWindowingMode は @TestApi(blocked)のため、事前に hidden API の
+     * 例外登録を行う。失敗しても launchBounds のみで続行する(非対応端末と同じ挙動)。
+     */
+    private val hiddenApiReady: Boolean by lazy {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return@lazy true
+        try {
+            org.lsposed.hiddenapibypass.HiddenApiBypass
+                .addHiddenApiExemptions("Landroid/app/ActivityOptions;")
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * フリーフォームウィンドウ(タイル領域への実ウィンドウ起動)が使えるか。
+     * 端末機能フラグ、または開発者向けオプションの有効化を検出する。
+     */
+    fun isFreeformAvailable(context: Context): Boolean {
+        if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT)) {
+            return true
+        }
+        return try {
+            Settings.Global.getInt(context.contentResolver, "enable_freeform_support", 0) == 1
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** WindowConfiguration.WINDOWING_MODE_FREEFORM(@hide のため定数を直接持つ) */
+    private const val WINDOWING_MODE_FREEFORM = 5
+
+    /**
+     * アプリをタイル領域(bounds)にフリーフォームウィンドウとして起動する。
+     * niri のタイルのように、ワークスペース上の矩形内で操作可能なウィンドウが開く。
+     *
+     * setLaunchBounds(公開 API)に加え、ホーム(フルスクリーンタスク)からの起動でも
+     * freeform になるよう setLaunchWindowingMode をリフレクションで呼ぶ
+     * (Taskbar 等の実績ある手法。greylist API のため失敗時は静かに諦めて通常起動)。
+     */
+    fun launchInBounds(context: Context, ref: AppRef, bounds: Rect) {
+        val options = ActivityOptions.makeBasic().setLaunchBounds(bounds)
+        if (hiddenApiReady) {
+            try {
+                ActivityOptions::class.java
+                    .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                    .invoke(options, WINDOWING_MODE_FREEFORM)
+            } catch (_: Throwable) {
+                // 端末/OS がリフレクションを拒否した場合は launchBounds のみに任せる
+            }
+        }
+        val intent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setComponent(ComponentName(ref.packageName, ref.className))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent, options.toBundle())
+        } catch (_: Exception) {
+            launch(context, ref)
+        }
+    }
 
     /** アプリを通常起動する。コンポーネントが消えていた場合はパッケージ既定の起動インテントにフォールバック。 */
     fun launch(context: Context, ref: AppRef) {
@@ -53,8 +119,7 @@ object LaunchUtils {
             .setComponent(ComponentName(second.packageName, second.className))
             .addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
-                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                    Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
             )
         try {
             context.startActivity(intent)

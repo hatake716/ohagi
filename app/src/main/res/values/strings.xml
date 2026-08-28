@@ -31,10 +31,6 @@
     <string name="menu_add_app">アプリを追加</string>
     <string name="menu_about">ohagi について</string>
 
-    <!-- ワークスペース -->
-    <string name="workspace_empty_title">ワークスペースは空です</string>
-    <string name="workspace_empty_hint">タップしてアプリを追加\n下中央のボタンでアプリ一覧を開けます</string>
-
     <!-- ドロワー/ピッカー -->
     <string name="drawer_title">アプリ一覧</string>
     <string name="picker_title">アプリを選択</string>

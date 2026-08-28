@@ -18,6 +18,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.Collator
 import java.util.Locale
 
@@ -39,6 +41,12 @@ class AppRepository(private val context: Context) {
     private val _apps = MutableStateFlow<List<AppInfo>>(emptyList())
     val apps: StateFlow<List<AppInfo>> = _apps
 
+    /** アイコンキャッシュの世代。パッケージ変更で増え、表示中アイコンの再読込を促す。 */
+    private val _iconVersion = MutableStateFlow(0)
+    val iconVersion: StateFlow<Int> = _iconVersion
+
+    private val refreshMutex = Mutex()
+
     private val iconCache = LruCache<String, ImageBitmap>(160)
     @Volatile
     private var labelIndex: Map<AppRef, String> = emptyMap()
@@ -51,7 +59,12 @@ class AppRepository(private val context: Context) {
                         .filter { it.startsWith("$pkg/") }
                         .forEach { iconCache.remove(it) }
                 }
+                _iconVersion.value++
             }
+            // アプリ更新中の REMOVED/ADDED(replacing) では再クエリしない。
+            // 更新途中の一時的な非表示状態を検出してレイアウトを誤って掃除するのを防ぐ。
+            val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+            if (replacing && intent.action != Intent.ACTION_PACKAGE_REPLACED) return
             refresh()
         }
     }
@@ -65,7 +78,7 @@ class AppRepository(private val context: Context) {
             addDataScheme("package")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(packageReceiver, filter, Context.RECEIVER_EXPORTED)
+            context.registerReceiver(packageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             context.registerReceiver(packageReceiver, filter)
@@ -75,10 +88,21 @@ class AppRepository(private val context: Context) {
 
     fun refresh() {
         scope.launch {
-            val list = queryLauncherActivities()
-            labelIndex = list.associate { it.ref to it.label }
-            _apps.value = list
+            // 直列化して、古いクエリ結果が新しい結果を上書きするレースを防ぐ
+            refreshMutex.withLock {
+                val list = queryLauncherActivities()
+                labelIndex = list.associate { it.ref to it.label }
+                _apps.value = list
+            }
         }
+    }
+
+    /** パッケージが端末にインストールされているか(無効化中や更新中でも true)。 */
+    fun isPackageInstalled(packageName: String): Boolean = try {
+        pm.getApplicationInfo(packageName, 0)
+        true
+    } catch (_: PackageManager.NameNotFoundException) {
+        false
     }
 
     private fun queryLauncherActivities(): List<AppInfo> {

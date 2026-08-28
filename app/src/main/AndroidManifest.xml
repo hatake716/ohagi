@@ -14,9 +14,11 @@
 
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
+    <!-- レイアウトは端末内のみに保存する(プライバシーポリシーと整合させ、
+         復元直後の未インストール参照によるレイアウト誤削除も避ける) -->
     <application
         android:name=".OhagiApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

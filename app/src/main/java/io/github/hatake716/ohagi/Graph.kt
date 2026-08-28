@@ -21,15 +21,36 @@ class Graph(context: Context) {
 
     fun start() {
         appRepository.startWatching()
-        // アプリ一覧が得られたら、消えたパッケージへの参照をレイアウトから掃除する。
-        // 空リスト(起動直後の未取得状態)ではレイアウトを消さないようガードする。
+        // 本当にアンインストールされたパッケージへの参照だけをレイアウトから掃除する。
+        // ドロワー一覧に見えないだけ(更新中・無効化中・alias切替中など)のアプリは
+        // PackageManager で実在確認し、削除しない。誤削除は恒久的なデータ喪失になるため。
         scope.launch {
             appRepository.apps
                 .filter { it.isNotEmpty() }
                 .collect { apps ->
-                    layoutRepository.pruneMissingPackages(
-                        apps.mapTo(mutableSetOf()) { it.ref.packageName }
-                    )
+                    val visible = apps.mapTo(mutableSetOf()) { it.ref.packageName }
+                    val layout = layoutRepository.state.value
+                    val referenced = buildSet {
+                        layout.columns.forEach { column ->
+                            column.tiles.forEach { add(it.app.packageName) }
+                        }
+                        layout.dock.forEach { item ->
+                            when (item) {
+                                is io.github.hatake716.ohagi.data.DockItem.DockApp ->
+                                    add(item.app.packageName)
+                                is io.github.hatake716.ohagi.data.DockItem.DockFolder ->
+                                    item.apps.forEach { add(it.packageName) }
+                                null -> Unit
+                            }
+                        }
+                    }
+                    val stillInstalled = referenced
+                        .filter { it !in visible }
+                        .filter { appRepository.isPackageInstalled(it) }
+                    val reallyGone = referenced - visible - stillInstalled.toSet()
+                    if (reallyGone.isNotEmpty()) {
+                        layoutRepository.pruneMissingPackages(visible + stillInstalled)
+                    }
                 }
         }
     }

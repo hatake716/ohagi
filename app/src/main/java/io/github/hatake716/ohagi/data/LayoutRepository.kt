@@ -1,6 +1,7 @@
 package io.github.hatake716.ohagi.data
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.Serializer
@@ -10,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
@@ -54,11 +56,18 @@ class LayoutRepository(context: Context) {
     private val store = context.applicationContext.layoutDataStore
 
     val state: StateFlow<LayoutState> =
-        store.data.stateIn(scope, SharingStarted.Eagerly, LayoutState())
+        store.data
+            .map { it.normalized() }
+            .stateIn(scope, SharingStarted.Eagerly, LayoutState())
 
     private fun update(transform: (LayoutState) -> LayoutState) {
         scope.launch {
-            store.updateData { current -> transform(current).normalized() }
+            try {
+                store.updateData { current -> transform(current.normalized()).normalized() }
+            } catch (e: Exception) {
+                // ディスク書き込み失敗でランチャーを落とさない(次回操作で再試行される)
+                Log.w("LayoutRepository", "レイアウトの保存に失敗しました", e)
+            }
         }
     }
 
@@ -70,17 +79,21 @@ class LayoutRepository(context: Context) {
             else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
         }
         val columnsFixed = columns
-            .map { it.copy(tiles = it.tiles.take(2), widthPreset = it.widthPreset.coerceIn(0, 2)) }
+            .map { it.copy(tiles = it.tiles.take(2), widthPreset = it.widthPreset.coerceIn(0, 3)) }
             .filter { it.tiles.isNotEmpty() }
         return copy(columns = columnsFixed, dock = dockFixed)
     }
 
     // ---- ワークスペース操作 ----
 
-    /** 指定位置の直後に新しいカラムを挿入する。afterIndex が null または範囲外なら末尾。 */
-    fun addColumnAfter(afterIndex: Int?, app: AppRef) {
+    /**
+     * 指定位置の直後に新しいカラムを挿入する。afterIndex が null または範囲外なら末尾。
+     * 生成したタイルの id を返す(フリーフォーム起動でタイル位置を待つために使う)。
+     */
+    fun addColumnAfter(afterIndex: Int?, app: AppRef): String {
+        val tileId = newId()
         update { state ->
-            val column = WorkColumn(id = newId(), tiles = listOf(Tile(newId(), app)))
+            val column = WorkColumn(id = newId(), tiles = listOf(Tile(tileId, app)))
             val insertAt = when {
                 afterIndex == null -> state.columns.size
                 afterIndex < 0 -> 0
@@ -91,15 +104,20 @@ class LayoutRepository(context: Context) {
                 columns = state.columns.toMutableList().apply { add(insertAt, column) }
             )
         }
+        return tileId
     }
 
-    /** カラムにタイルを追加して分割する(最大 2 タイル)。atStart = true で先頭(上/左)に挿入。 */
-    fun addTileToColumn(columnId: String, app: AppRef, atStart: Boolean) {
+    /**
+     * カラムにタイルを追加して分割する(最大 2 タイル)。atStart = true で先頭(上/左)に挿入。
+     * 生成したタイルの id を返す(満杯で追加できない場合も id は返るが無効)。
+     */
+    fun addTileToColumn(columnId: String, app: AppRef, atStart: Boolean): String {
+        val tileId = newId()
         update { state ->
             state.copy(columns = state.columns.map { column ->
                 if (column.id != columnId || column.tiles.size >= 2) column
                 else {
-                    val tile = Tile(newId(), app)
+                    val tile = Tile(tileId, app)
                     column.copy(
                         tiles = if (atStart) listOf(tile) + column.tiles
                         else column.tiles + tile
@@ -107,6 +125,7 @@ class LayoutRepository(context: Context) {
                 }
             })
         }
+        return tileId
     }
 
     /** タイルを削除する。カラムが空になったらカラムごと消える。 */
@@ -147,12 +166,12 @@ class LayoutRepository(context: Context) {
         }
     }
 
-    /** カラム幅プリセットを 狭い → 標準 → 広い → 狭い… と循環させる。 */
+    /** カラム幅プリセットを niri 同様に 1/3 → 1/2 → 2/3 → フル → 1/3… と循環させる。 */
     fun cycleWidth(columnId: String) {
         update { state ->
             state.copy(columns = state.columns.map { column ->
                 if (column.id != columnId) column
-                else column.copy(widthPreset = (column.widthPreset + 1) % 3)
+                else column.copy(widthPreset = (column.widthPreset + 1) % 4)
             })
         }
     }

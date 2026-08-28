@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
@@ -29,7 +30,9 @@ fun AppIcon(
     modifier: Modifier = Modifier,
 ) {
     val graph = LocalGraph.current
-    val icon by produceState<ImageBitmap?>(initialValue = null, app) {
+    // iconVersion をキーに含め、アプリ更新でキャッシュが無効化されたら再読込する
+    val iconVersion by graph.appRepository.iconVersion.collectAsState()
+    val icon by produceState<ImageBitmap?>(initialValue = null, app, iconVersion) {
         value = withContext(Dispatchers.IO) { graph.appRepository.iconOf(app) }
     }
     val current = icon

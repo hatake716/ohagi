@@ -1,7 +1,6 @@
 package io.github.hatake716.ohagi.ui.workspace
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -33,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -41,14 +41,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.LocalGraph
-import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.Tile
 import io.github.hatake716.ohagi.data.WorkColumn
 import io.github.hatake716.ohagi.ui.common.AppIcon
@@ -60,12 +59,14 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** niri のカラム幅プリセットに相当する幅係数 */
-fun columnWidthFraction(preset: Int, isPortrait: Boolean): Float = when (preset) {
-    0 -> if (isPortrait) 0.62f else 0.44f
-    2 -> if (isPortrait) 0.96f else 0.86f
-    else -> if (isPortrait) 0.80f else 0.62f
-}
+/** niri のカラム幅プリセット: 1/3 → 1/2 → 2/3 → フル幅 */
+fun columnWidthFraction(preset: Int, @Suppress("UNUSED_PARAMETER") isPortrait: Boolean): Float =
+    when (preset) {
+        0 -> 1f / 3f
+        1 -> 1f / 2f
+        3 -> 1f
+        else -> 2f / 3f
+    }
 
 private fun minWidthFraction(isPortrait: Boolean): Float = columnWidthFraction(0, isPortrait)
 
@@ -111,11 +112,12 @@ fun WorkspaceStrip(
     isPortrait: Boolean,
     onLaunchTile: (WorkColumn, Tile) -> Unit,
     onTileLongPress: (WorkColumn, Tile) -> Unit,
-    onAddFirst: () -> Unit,
+    onTileBounds: (String, android.graphics.Rect) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (columns.isEmpty()) {
-        EmptyWorkspace(onAddFirst = onAddFirst, modifier = modifier)
+        // 空のワークスペースには何も表示しない(壁紙とドックのみ)
+        Box(modifier = modifier.fillMaxSize())
         return
     }
 
@@ -156,6 +158,7 @@ fun WorkspaceStrip(
                         }
                     },
                     onTileLongPress = { tile -> onTileLongPress(column, tile) },
+                    onTileBounds = onTileBounds,
                     modifier = Modifier
                         .fillParentMaxHeight()
                         .animateItem(
@@ -180,6 +183,7 @@ private fun WorkspaceColumn(
     width: androidx.compose.ui.unit.Dp,
     onTileTap: (Tile) -> Unit,
     onTileLongPress: (Tile) -> Unit,
+    onTileBounds: (String, android.graphics.Rect) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scale by animateFloatAsState(
@@ -193,12 +197,6 @@ private fun WorkspaceColumn(
         label = "columnAlpha",
     )
 
-    // 出現時に少し縮んだ状態からスプリングで立ち上がる(niri のウィンドウオープン風)
-    val appear = remember { Animatable(0.88f) }
-    LaunchedEffect(Unit) {
-        appear.animateTo(1f, spring(dampingRatio = 0.68f, stiffness = 320f))
-    }
-
     val tileArrangement = Arrangement.spacedBy(12.dp)
     val content: @Composable (Modifier) -> Unit = { tileModifier ->
         column.tiles.forEach { tile ->
@@ -207,6 +205,7 @@ private fun WorkspaceColumn(
                 focused = focused,
                 onTap = { onTileTap(tile) },
                 onLongPress = { onTileLongPress(tile) },
+                onBounds = { rect -> onTileBounds(tile.id, rect) },
                 modifier = tileModifier,
             )
         }
@@ -216,8 +215,8 @@ private fun WorkspaceColumn(
         modifier = modifier
             .width(width)
             .graphicsLayer {
-                scaleX = scale * appear.value
-                scaleY = scale * appear.value
+                scaleX = scale
+                scaleY = scale
                 this.alpha = alpha
             }
             .padding(vertical = 10.dp)
@@ -247,10 +246,13 @@ private fun TileCard(
     focused: Boolean,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
+    onBounds: (android.graphics.Rect) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val graph = LocalGraph.current
-    val label = remember(tile.app) { graph.appRepository.labelOf(tile.app) }
+    // アプリ一覧の読込完了・更新に追従してラベルを再解決する
+    val apps by graph.appRepository.apps.collectAsState()
+    val label = remember(tile.app, apps) { graph.appRepository.labelOf(tile.app) }
 
     val borderColor by animateColorAsState(
         targetValue = if (focused) Azuki else TileBorder,
@@ -262,6 +264,17 @@ private fun TileCard(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                val b = coordinates.boundsInWindow()
+                onBounds(
+                    android.graphics.Rect(
+                        b.left.roundToInt(),
+                        b.top.roundToInt(),
+                        b.right.roundToInt(),
+                        b.bottom.roundToInt(),
+                    )
+                )
+            }
             .clip(shape)
             .background(
                 Brush.verticalGradient(
@@ -297,44 +310,3 @@ private fun TileCard(
     }
 }
 
-@Composable
-private fun EmptyWorkspace(
-    onAddFirst: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val shape = RoundedCornerShape(28.dp)
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier.fillMaxSize(),
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .fillMaxWidth(0.72f)
-                .clip(shape)
-                .background(PanelScrimLight)
-                .border(1.dp, TileBorder, shape)
-                .combinedClickableCompat(onClick = onAddFirst)
-                .padding(horizontal = 24.dp, vertical = 40.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.workspace_empty_title),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = stringResource(R.string.workspace_empty_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun Modifier.combinedClickableCompat(onClick: () -> Unit): Modifier =
-    this.combinedClickable(onClick = onClick)

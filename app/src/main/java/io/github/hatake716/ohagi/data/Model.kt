@@ -21,13 +21,13 @@ data class Tile(
 /**
  * ワークスペースの 1 カラム。niri のカラムに相当する。
  * タイルは 1〜2 個。2 個のときは縦画面で上下、横画面で左右に分割表示される。
- * widthPreset: 0 = 狭い, 1 = 標準, 2 = 広い
+ * widthPreset は niri の幅プリセットに対応: 0 = 1/3, 1 = 1/2, 2 = 2/3, 3 = フル幅
  */
 @Serializable
 data class WorkColumn(
     val id: String,
     val tiles: List<Tile>,
-    val widthPreset: Int = 1,
+    val widthPreset: Int = 2,
 )
 
 /** ドックのスロットに入るもの: アプリ単体またはフォルダ */
