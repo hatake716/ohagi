@@ -7,7 +7,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -52,7 +54,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -276,15 +281,30 @@ private fun DrawerCell(
                 scaleY = scale
             }
             .clip(RoundedCornerShape(18.dp))
-            // 長押し→動かすとドラッグ開始、動かさず離すとメニュー。
-            // ドロワーは閉じず、このセルの pointerInput がドラッグ完了まで追従を担う。
+            // 長押し→動かすとドラッグ、動かさず離すとメニュー。ドロワーは閉じない。
+            // LazyVerticalGrid のスクロールにドラッグを奪われないよう、長押し成立後は
+            // Initial パス(親スクロールより先)で pointer を占有し必ず consume する。
             .pointerInput(app) {
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { _ ->
-                        totalDrag = Offset.Zero
-                        started = false
-                    },
-                    onDrag = { change, delta ->
+                awaitEachGesture {
+                    // 1. 最初の down を待つ(まだ consume しない=スクロールに任せる)
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // 2. 長押し成立を待つ。この間の縦移動はスクロールに使われてよい。
+                    val longPress = awaitLongPressOrCancellation(down.id)
+                        ?: return@awaitEachGesture  // 長押し不成立: タップ/スクロールへ譲る
+                    // 3. 長押し成立。以後このセルがポインタを占有する。
+                    totalDrag = Offset.Zero
+                    started = false
+                    longPress.consume()
+
+                    var canceled = false
+                    // 4. 自前ドラッグループ: Initial パスで親より先にイベントを受け必ず consume
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null) { canceled = true; break }
+                        if (change.isConsumed) { canceled = true; break }
+                        if (change.changedToUp()) { change.consume(); break }
+                        val delta = change.positionChange()
                         change.consume()
                         totalDrag += delta
                         if (!started && totalDrag.getDistance() >= movedThresholdPx) {
@@ -292,18 +312,18 @@ private fun DrawerCell(
                             val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
                             drag.startDrawer(app.ref, toRoot(change.position), size)
                         }
-                        // 開始後は毎フレーム指のルート座標を流す(ドロワーを閉じないので途切れない)。
                         if (started) drag.move(toRoot(change.position))
-                    },
-                    onDragEnd = {
+                    }
+
+                    // 5. 終了分岐
+                    if (canceled) {
+                        // ドラッグ確立後に奪われた場合のみ reset。未確立ならメニューを出さない。
+                        if (started) drag.reset()
+                    } else {
                         if (started) onDrop() else onLongPressNoMove()
-                        started = false
-                    },
-                    onDragCancel = {
-                        if (started) drag.reset() else onLongPressNoMove()
-                        started = false
-                    },
-                )
+                    }
+                    started = false
+                }
             }
             .combinedClickable(
                 interactionSource = interactionSource,

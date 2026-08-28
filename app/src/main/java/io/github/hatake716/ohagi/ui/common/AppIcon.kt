@@ -11,9 +11,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.data.AppRef
 import kotlinx.coroutines.Dispatchers
@@ -38,14 +40,24 @@ fun AppIcon(
     }
     // iPhone のアイコン角丸に近い比率
     val iosShape = RoundedCornerShape(size * 0.2237f)
+    // iPhone 風に控えめな影を落として画面から少し浮かせる。
+    // clip の前に置くことで影がアイコン外周に落ちる(clip 後だと影も切られる)。
+    val shadowModifier = Modifier
+        .size(size)
+        .shadow(
+            elevation = size * 0.05f,
+            shape = iosShape,
+            clip = false,
+            ambientColor = Color.Black,
+            spotColor = Color.Black,
+        )
+        .clip(iosShape)
     val current = icon
     if (current != null) {
         Image(
             bitmap = current,
             contentDescription = null,
-            modifier = modifier
-                .size(size)
-                .clip(iosShape),
+            modifier = modifier.then(shadowModifier),
         )
     } else {
         Box(
