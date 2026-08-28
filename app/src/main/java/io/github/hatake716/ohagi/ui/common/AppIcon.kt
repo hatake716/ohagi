@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * アプリアイコンを非同期で読み込んで表示する共通コンポーザブル。
+ * iPhone 風に角丸(辺長の約 22.37% = superellipse 近似)でマスクして統一感を出す。
  * 読み込み中はプレースホルダーの角丸ボックスを表示する。
  */
 @Composable
@@ -35,18 +36,22 @@ fun AppIcon(
     val icon by produceState<ImageBitmap?>(initialValue = null, app, iconVersion) {
         value = withContext(Dispatchers.IO) { graph.appRepository.iconOf(app) }
     }
+    // iPhone のアイコン角丸に近い比率
+    val iosShape = RoundedCornerShape(size * 0.2237f)
     val current = icon
     if (current != null) {
         Image(
             bitmap = current,
             contentDescription = null,
-            modifier = modifier.size(size),
+            modifier = modifier
+                .size(size)
+                .clip(iosShape),
         )
     } else {
         Box(
             modifier = modifier
                 .size(size)
-                .clip(RoundedCornerShape(size / 4))
+                .clip(iosShape)
                 .background(Color(0x33FFFFFF))
         )
     }

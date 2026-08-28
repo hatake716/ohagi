@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -18,12 +19,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -36,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -50,131 +50,76 @@ import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.ui.dragdrop.DragController
+import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
  * ホーム主画面のアイコングリッド(固定 [LayoutState.HOME_CELL_COUNT] セル)。
- * 壁紙の上に直接描かれ、各セルはアプリアイコン + ラベル。index がそのままセル位置。
+ * ドラッグ状態は共有 [DragController] に委譲し、各セルは矩形を報告し、長押しで
+ * ドラッグ開始をトリガーするだけ。指の追従・浮遊アイコン・ドロップ確定は親が担う。
  *
- * アイコンを長押しするとドラッグが始まり、別セルの上でドロップすると 2 セルを入れ替える
- * (空きセルへ落とすと移動)。長押しして動かさず離すとメニュー/追加ピッカーを開く。
- *
- * @param onCellTap       セルのタップ(空きセルなら追加、アプリなら起動)
- * @param onCellLongPress セルの長押し(動かさず離したとき。メニュー/追加)
- * @param onSwap          ドラッグ&ドロップで from→to のセルを入れ替える
+ * @param drag        共有ドラッグ状態
+ * @param rootCoords  親(HomeScreen ルート Box)の座標。矩形/指位置をルート座標へ変換
+ * @param onCellTap   セルのタップ(アプリなら起動、空きは無反応)
+ * @param onCellLongPressNoMove セルを長押しして動かさず離したとき(メニュー)
+ * @param onDrop      ドラッグを離したとき(親が commitDrop する)
  */
 @Composable
 fun HomeGrid(
     home: List<HomeItem?>,
+    drag: DragController,
+    rootCoords: () -> LayoutCoordinates?,
     onCellTap: (Int) -> Unit,
-    onCellLongPress: (Int) -> Unit,
-    onSwap: (Int, Int) -> Unit,
+    onCellLongPressNoMove: (Int) -> Unit,
+    onDrop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val gridState = rememberLazyGridState()
     val density = LocalDensity.current
     val movedThresholdPx = remember(density) { with(density) { 12.dp.toPx() } }
 
-    // ドラッグ状態(この Composable 内に閉じる)
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    // グリッドのルート Box を原点とした現在の指位置。graphicsLayer 内で読んで描画フェーズのみ更新。
-    var fingerPos by remember { mutableStateOf(Offset.Zero) }
-    // グリッドのルート Box の LayoutCoordinates(セル座標→グリッド座標の変換に使う)
-    var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    // ドラッグ中のセルのサイズ(浮遊コピーの中心合わせ用)
-    var cellSize by remember { mutableStateOf(Offset.Zero) }
-
-    Box(
-        modifier = modifier.onGloballyPositioned { rootCoords = it },
-    ) {
+    // 6 行を領域いっぱいに均等配置し、最下段がドック直上まで来るようにする。
+    // (LazyVerticalGrid は行が上詰めになり下に余白が残るため、各行の高さを固定する)
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val rowHeight = (maxHeight - 8.dp) / LayoutState.HOME_ROWS
         LazyVerticalGrid(
-            state = gridState,
             columns = GridCells.Fixed(LayoutState.HOME_COLUMNS),
-            // 単一ページ・固定セル数。縦スクロールを無効化し、背面の上スワイプジェスチャと競合させない。
             userScrollEnabled = false,
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
             itemsIndexed(home, key = { i, _ -> i }) { index, item ->
                 HomeCell(
+                    index = index,
                     item = item,
-                    isDragging = draggingIndex == index,
-                    onTap = { onCellTap(index) },
-                    onLongPressNoMove = { onCellLongPress(index) },
-                    onDragStart = { gridLocalPos, size ->
-                        draggingIndex = index
-                        fingerPos = gridLocalPos
-                        cellSize = size
-                    },
-                    onDragMove = { gridLocalPos -> fingerPos = gridLocalPos },
-                    onDragEnd = {
-                        val from = draggingIndex
-                        if (from != null) {
-                            val to = gridState.cellIndexAt(fingerPos)
-                            if (to != null && to != from) onSwap(from, to)
-                        }
-                        draggingIndex = null
-                    },
-                    onDragCancel = { draggingIndex = null },
-                    rootCoords = { rootCoords },
+                    isDragging = drag.isSource(DragOrigin.Home(index)),
+                    drag = drag,
+                    rootCoords = rootCoords,
                     movedThresholdPx = movedThresholdPx,
+                    rowHeight = rowHeight,
+                    onTap = { onCellTap(index) },
+                    onLongPressNoMove = { onCellLongPressNoMove(index) },
+                    onDrop = onDrop,
                 )
-            }
-        }
-
-        // 浮遊コピー(ドラッグ中のみ)。1 枚だけ描き、指位置へ graphicsLayer で移動する。
-        val dragIdx = draggingIndex
-        val dragItem = if (dragIdx != null) home.getOrNull(dragIdx) else null
-        if (dragItem != null) {
-            // 浮遊 Box の幅をドラッグ元セル幅に固定する。こうしないと内部ラベルの
-            // fillMaxWidth() がルート全幅に展開し、中心合わせ(translationX)が破綻する。
-            val cellWidthDp = with(density) { cellSize.x.toDp() }
-            Box(
-                modifier = Modifier
-                    .width(cellWidthDp)
-                    .graphicsLayer {
-                        // 指位置にコピーの中心が来るよう半セル分オフセット
-                        translationX = fingerPos.x - cellSize.x / 2f
-                        translationY = fingerPos.y - cellSize.y / 2f
-                        alpha = 0.9f
-                        scaleX = 1.1f
-                        scaleY = 1.1f
-                    },
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    HomeCellContent(dragItem)
-                }
             }
         }
     }
 }
 
-/** グリッド座標(ルート Box 原点)の点が、どのセル index の上か。無ければ null。 */
-private fun LazyGridState.cellIndexAt(pos: Offset): Int? {
-    return layoutInfo.visibleItemsInfo.firstOrNull { item ->
-        val x = item.offset.x
-        val y = item.offset.y
-        pos.x >= x && pos.x < x + item.size.width &&
-            pos.y >= y && pos.y < y + item.size.height
-    }?.index
-}
-
-/** ホームグリッドの 1 セル。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeCell(
+    index: Int,
     item: HomeItem?,
     isDragging: Boolean,
-    onTap: () -> Unit,
-    onLongPressNoMove: () -> Unit,
-    onDragStart: (gridLocalPos: Offset, cellSize: Offset) -> Unit,
-    onDragMove: (gridLocalPos: Offset) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit,
+    drag: DragController,
     rootCoords: () -> LayoutCoordinates?,
     movedThresholdPx: Float,
+    rowHeight: androidx.compose.ui.unit.Dp,
+    onTap: () -> Unit,
+    onLongPressNoMove: () -> Unit,
+    onDrop: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
@@ -187,12 +132,10 @@ private fun HomeCell(
         label = "homeCellScale",
     )
 
-    // このセルの LayoutCoordinates(セル内ローカル座標→グリッド座標変換に使う)
     var cellCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var totalDrag by remember { mutableStateOf(Offset.Zero) }
 
-    /** セル内ローカル座標を、グリッドのルート Box 原点の座標へ変換する。 */
-    fun toGrid(local: Offset): Offset {
+    fun toRoot(local: Offset): Offset {
         val root = rootCoords() ?: return local
         val cell = cellCoords ?: return local
         return root.localPositionOf(cell, local)
@@ -200,19 +143,27 @@ private fun HomeCell(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { cellCoords = it }
+            .height(rowHeight)
+            .onGloballyPositioned { coords ->
+                cellCoords = coords
+                val root = rootCoords()
+                if (root != null) {
+                    val topLeft = root.localPositionOf(coords, Offset.Zero)
+                    drag.reportHomeCell(
+                        index,
+                        Rect(topLeft, Size(coords.size.width.toFloat(), coords.size.height.toFloat())),
+                    )
+                }
+            }
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            // ドラッグ中の元セルは半透明にする(浮遊コピーが本体)
             .alpha(if (isDragging) 0.35f else 1f)
             .clip(RoundedCornerShape(18.dp))
-            // 長押し→ドラッグ。動かさず離したらメニュー扱い(onLongPressNoMove)。
-            // 空きセルはドラッグ対象にしない(アプリ/フォルダのみ移動可)。動かしても
-            // 常にメニュー/追加扱いにし、不可視ドラッグでアプリを奪う誤操作を防ぐ。
             .pointerInput(item) {
                 val draggable = item is HomeItem.HomeApp || item is HomeItem.HomeFolder
                 detectDragGesturesAfterLongPress(
@@ -220,24 +171,23 @@ private fun HomeCell(
                         totalDrag = Offset.Zero
                         if (draggable) {
                             val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
-                            onDragStart(toGrid(local), size)
+                            drag.startHome(index, item, toRoot(local), size)
                         }
                     },
                     onDrag = { change, delta ->
                         change.consume()
                         totalDrag += delta
-                        if (draggable) onDragMove(toGrid(change.position))
+                        if (draggable) drag.move(toRoot(change.position))
                     },
                     onDragEnd = {
                         if (!draggable || totalDrag.getDistance() < movedThresholdPx) {
-                            // 空セル、またはほぼ動かさず解放 → メニュー/追加
-                            onDragCancel()
+                            if (draggable) drag.reset()
                             onLongPressNoMove()
                         } else {
-                            onDragEnd()
+                            onDrop()
                         }
                     },
-                    onDragCancel = { onDragCancel() },
+                    onDragCancel = { drag.reset() },
                 )
             }
             .combinedClickable(
@@ -251,9 +201,9 @@ private fun HomeCell(
     }
 }
 
-/** セルの中身(アイコン + ラベル / 空きセル)。浮遊コピーと共有できるよう切り出し。 */
+/** セルの中身(アイコン + ラベル / 空きセル)。 */
 @Composable
-private fun HomeCellContent(item: HomeItem?) {
+internal fun HomeCellContent(item: HomeItem?) {
     when (item) {
         is HomeItem.HomeApp -> {
             AppIcon(app = item.app, size = 56.dp)
@@ -266,7 +216,6 @@ private fun HomeCellContent(item: HomeItem?) {
             HomeLabel(text = item.name)
         }
         null -> {
-            // 空きセル: アイコン分の高さだけ確保した透明タップ領域(壁紙をクリーンに保つ)
             Box(Modifier.height(56.dp).fillMaxWidth())
             Spacer(Modifier.height(4.dp))
             HomeLabel(text = "")
@@ -274,7 +223,6 @@ private fun HomeCellContent(item: HomeItem?) {
     }
 }
 
-/** アプリラベルを AppRef から解決する(AppInfo を引き回さない、DockSlot と同手法)。 */
 @Composable
 private fun homeLabelOf(item: HomeItem.HomeApp): String {
     val graph = LocalGraph.current

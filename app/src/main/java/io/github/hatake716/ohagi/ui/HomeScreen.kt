@@ -12,12 +12,14 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Delete
@@ -39,9 +41,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -55,11 +64,15 @@ import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
 import io.github.hatake716.ohagi.data.HomeItem
+import io.github.hatake716.ohagi.ui.common.AppIcon
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.dock.DockBar
 import io.github.hatake716.ohagi.ui.dock.FolderSheet
+import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
+import io.github.hatake716.ohagi.ui.dragdrop.DropTarget
+import io.github.hatake716.ohagi.ui.dragdrop.rememberDragController
 import io.github.hatake716.ohagi.ui.drawer.AppDrawer
 import io.github.hatake716.ohagi.ui.home.HomeGrid
 import io.github.hatake716.ohagi.util.LaunchUtils
@@ -83,8 +96,6 @@ private sealed interface Overlay {
 private sealed interface PickTarget {
     data class DockSlot(val slot: Int) : PickTarget
     data class FolderAdd(val slot: Int) : PickTarget
-    /** ホームグリッドの index セルに置く。 */
-    data class HomeSlot(val index: Int) : PickTarget
     /** 分割で開く 1 つ目を選ぶ(選ぶと [SplitSecond] に進む)。 */
     data object SplitFirst : PickTarget
     /** 分割で開く 2 つ目を選ぶ(1 つ目は [first])。 */
@@ -160,40 +171,67 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
         onAppLaunched()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // ---- 横断ドラッグ&ドロップ ----
+    val drag = rememberDragController()
+    var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    /** ドラッグ確定: origin×target で入替/移動/設置を振り分ける。 */
+    fun commitDrop() {
+        val origin = drag.origin
+        val target = drag.resolveDrop()
+        val repo = graph.layoutRepository
+        if (origin != null && target != null) {
+            when {
+                // 削除エリアへドロップ: 元の場所から取り除く(ドロワー発は元々未配置なので no-op)
+                target is DropTarget.Trash && origin is DragOrigin.Home ->
+                    repo.setHomeItem(origin.index, null)
+                target is DropTarget.Trash && origin is DragOrigin.Dock ->
+                    repo.setDockItem(origin.slot, null)
+                origin is DragOrigin.Home && target is DropTarget.HomeCell ->
+                    repo.swapHomeItems(origin.index, target.index)
+                origin is DragOrigin.Dock && target is DropTarget.DockSlot ->
+                    repo.swapDockItems(origin.slot, target.slot)
+                origin is DragOrigin.Home && target is DropTarget.DockSlot ->
+                    repo.moveHomeToDock(origin.index, target.slot)
+                origin is DragOrigin.Dock && target is DropTarget.HomeCell ->
+                    repo.moveDockToHome(origin.slot, target.index)
+                origin is DragOrigin.Drawer && target is DropTarget.HomeCell ->
+                    drag.draggingApp?.let { repo.placeAppOnHome(target.index, it) }
+                origin is DragOrigin.Drawer && target is DropTarget.DockSlot ->
+                    drag.draggingApp?.let { repo.placeAppOnDock(target.slot, it) }
+            }
+        }
+        // ドロワー発ドラッグはドロワーを開いたままなので、確定時に閉じる。
+        if (origin is DragOrigin.Drawer) overlay = Overlay.None
+        drag.reset()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { rootCoords = it },
+    ) {
         // 背面ジェスチャ層: 主画面は壁紙のみ(ミニマル)。
-        // - 画面中〜上部からの大きい上スワイプ → ドロワーを開く。
-        // - 画面下端付近からの上スワイプ → 隠れたドックを一時表示する。
+        // 画面下端付近からの上スワイプ → 隠れたドックを一時表示する。
+        // (ドロワーは中央ランチャーボタンからのみ開く。上スワイプでのドロワー起動は廃止)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    // 閾値・画面高はジェスチャ発生時の live な値を使う。
-                    // configChanges 宣言で回転しても Activity は再生成されず pointerInput(Unit) も
-                    // 貼り直されないため、ブロック先頭で size.height を固定すると回転後に破綻する。
                     val edgeThresholdPx = with(density) { 120.dp.toPx() }
                     val smallSwipePx = with(density) { 40.dp.toPx() }
-                    val drawerSwipePx = with(density) { 120.dp.toPx() }
                     var dragged = 0f
                     var fromBottomEdge = false
                     detectVerticalDragGestures(
                         onDragStart = { offset ->
                             dragged = 0f
-                            // 開始位置が下端エッジ内か(その時点の実画面高で判定)
                             fromBottomEdge = offset.y > size.height - edgeThresholdPx
                         },
                         onVerticalDrag = { _, dragAmount -> dragged += dragAmount },
                         onDragEnd = {
-                            when {
-                                // 下端からの上スワイプ → ドックを一時表示
-                                fromBottomEdge && dragged < -smallSwipePx &&
-                                    overlay == Overlay.None -> {
-                                    dockVisible = true
-                                }
-                                // それ以外の大きい上スワイプ → ドロワー
-                                dragged < -drawerSwipePx && overlay == Overlay.None -> {
-                                    overlay = Overlay.Drawer
-                                }
+                            // 下端からの上スワイプ → ドックを一時表示
+                            if (fromBottomEdge && dragged < -smallSwipePx && overlay == Overlay.None) {
+                                dockVisible = true
                             }
                         },
                     )
@@ -201,26 +239,24 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
         )
 
         // ホーム主画面のアイコングリッド(壁紙の上)。
-        // ステータスバーを避け、下はドックの高さ分を空ける。userScrollEnabled=false なので
-        // グリッド外余白の上スワイプは背面ジェスチャ層に届き、ドロワー起動を妨げない。
         HomeGrid(
             home = layout.home,
+            drag = drag,
+            rootCoords = { rootCoords },
             onCellTap = { index ->
+                // 空きセルタップは無反応(アプリ設置は D&D のみ)。
                 when (val item = layout.home.getOrNull(index)) {
                     is HomeItem.HomeApp -> openApp(item.app)
-                    is HomeItem.HomeFolder -> Unit // フォルダ生成 UI は未実装
-                    null -> overlay = Overlay.Picker(PickTarget.HomeSlot(index))
+                    else -> Unit
                 }
             },
-            onCellLongPress = { index ->
+            onCellLongPressNoMove = { index ->
+                // アプリセルは長押しでメニュー。空きセルは無反応。
                 if (layout.home.getOrNull(index) is HomeItem.HomeApp) {
                     overlay = Overlay.HomeItemMenu(index)
-                } else {
-                    // 空きセル長押しでも追加できるようにする
-                    overlay = Overlay.Picker(PickTarget.HomeSlot(index))
                 }
             },
-            onSwap = { from, to -> graph.layoutRepository.swapHomeItems(from, to) },
+            onDrop = { commitDrop() },
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
@@ -228,8 +264,9 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
         )
 
         // ドック(自動非表示・iOS風スプリング)。BottomCenter にオーバーレイ配置。
+        // ドラッグ中は隠さない(ドロップ先として見せ続ける)。
         AnimatedVisibility(
-            visible = dockVisible,
+            visible = dockVisible || drag.isDragging,
             enter = slideInVertically(
                 animationSpec = spring(
                     dampingRatio = 0.8f,
@@ -246,25 +283,31 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
         ) {
             DockBar(
                 dock = layout.dock,
+                drag = drag,
+                rootCoords = { rootCoords },
                 onSlotTap = { slot ->
+                    // 空きスロットタップは無反応(アプリ設置は D&D のみ)。
                     when (val item = layout.dock.getOrNull(slot)) {
                         is DockItem.DockApp -> openApp(item.app)
                         is DockItem.DockFolder -> overlay = Overlay.FolderView(slot)
-                        null -> overlay = Overlay.Picker(PickTarget.DockSlot(slot))
+                        null -> Unit
                     }
                 },
-                onSlotLongPress = { slot -> overlay = Overlay.SlotMenu(slot) },
+                onSlotLongPressNoMove = { slot -> overlay = Overlay.SlotMenu(slot) },
                 onLauncherTap = { overlay = Overlay.Drawer },
                 // 中央ボタン長押し = 分割画面の設定(1 つ目 → 2 つ目を選ぶ)のみ
                 onLauncherLongPress = { overlay = Overlay.Picker(PickTarget.SplitFirst) },
-                onSwapDock = { from, to -> graph.layoutRepository.swapDockItems(from, to) },
+                onDrop = { commitDrop() },
                 modifier = Modifier
                     .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }
 
-        // ドロワー表示中(開閉アニメーション含む)は背面へのタッチを遮断する
+        // ドロワー表示中(開閉アニメーション含む)は背面へのタッチを遮断する。
+        // 【重要な不変条件】この遮断 Box は必ず下の AppDrawer より前(z 下層)に宣言すること。
+        // AppDrawer より後(上)に置くと、hit-test が最前面のこの Box を先に掴み、
+        // DrawerCell の長押しドラッグ開始を奪ってドロワー発 D&D が壊れる。
         if (overlay == Overlay.Drawer) {
             Box(
                 modifier = Modifier
@@ -301,6 +344,8 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
         ) {
             AppDrawer(
                 apps = apps,
+                drag = drag,
+                rootCoords = { rootCoords },
                 onLaunch = { app -> openApp(app.ref) },
                 onAddToWorkspace = { app ->
                     // 「分割で開く」: このアプリを 1 つ目にして、2 つ目の相方を選ばせる。
@@ -318,8 +363,80 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                 onOpenDefaultHome = {
                     (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
                 },
+                // ドラッグ確定: commitDrop が設置/削除し、ドロワーを閉じる。
+                onDrop = { commitDrop() },
                 onDismiss = { overlay = Overlay.None },
             )
+        }
+
+        // 削除エリア(ドラッグ中のみ・画面上部)。ドラッグ中のアイコンをここへ落とすと削除。
+        // 指の移動/ドロップは各領域(ホーム/ドック/ドロワー)のジェスチャが担うため、
+        // このエリアと浮遊アイコン層は pointerInput を持たず、描画と矩形報告のみ行う。
+        if (drag.isDragging) {
+            val overTrash = drag.isOverTrash()
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(
+                        if (overTrash) Color(0xCCD32F2F) else Color(0x66000000)
+                    )
+                    .onGloballyPositioned { coords ->
+                        val root = rootCoords
+                        if (root != null) {
+                            val tl = root.localPositionOf(coords, Offset.Zero)
+                            drag.reportTrash(
+                                androidx.compose.ui.geometry.Rect(
+                                    tl,
+                                    androidx.compose.ui.geometry.Size(
+                                        coords.size.width.toFloat(), coords.size.height.toFloat(),
+                                    ),
+                                )
+                            )
+                        }
+                    }
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+            ) {
+                androidx.compose.foundation.layout.Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.Icon(
+                        imageVector = Icons.Rounded.Delete,
+                        contentDescription = null,
+                        tint = Color.White,
+                    )
+                    androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.action_remove),
+                        color = Color.White,
+                    )
+                }
+            }
+
+            // 浮遊アイコン(最前面)。指位置に追従。
+            val di = drag.draggingHomeItem
+            val cellW = with(density) { drag.cellSize.x.toDp() }
+            Box(
+                modifier = Modifier
+                    .width(if (cellW.value > 0f) cellW else 72.dp)
+                    .graphicsLayer {
+                        translationX = drag.fingerPos.x - drag.cellSize.x / 2f
+                        translationY = drag.fingerPos.y - drag.cellSize.y / 2f
+                        alpha = 0.9f
+                        scaleX = 1.1f
+                        scaleY = 1.1f
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                val app = drag.draggingApp
+                if (app != null) {
+                    AppIcon(app = app, size = 56.dp)
+                } else if (di is HomeItem.HomeFolder) {
+                    di.apps.firstOrNull()?.let { AppIcon(app = it, size = 56.dp) }
+                }
+            }
         }
     }
 
@@ -524,10 +641,6 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                                 Overlay.Picker(PickTarget.SplitSecond(first.ref))
                             } else Overlay.None
                         is PickTarget.SplitSecond -> first?.let { openSplit(target.first, it.ref) }
-                        is PickTarget.HomeSlot -> {
-                            first?.let { graph.layoutRepository.addAppToHomeSlot(target.index, it.ref) }
-                            overlay = Overlay.None
-                        }
                         is PickTarget.DockSlot -> {
                             first?.let { graph.layoutRepository.addAppToDockSlot(target.slot, it.ref) }
                             overlay = Overlay.None

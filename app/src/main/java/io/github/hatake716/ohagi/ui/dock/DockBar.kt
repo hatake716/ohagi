@@ -27,7 +27,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,6 +50,8 @@ import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.DockItem
 import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.ui.dragdrop.DragController
+import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
 import io.github.hatake716.ohagi.ui.theme.Azuki
 import io.github.hatake716.ohagi.ui.theme.AzukiDeep
 import io.github.hatake716.ohagi.ui.theme.Kome
@@ -67,117 +68,62 @@ import io.github.hatake716.ohagi.ui.theme.TileBorder
 @Composable
 fun DockBar(
     dock: List<DockItem?>,
+    drag: DragController,
+    rootCoords: () -> LayoutCoordinates?,
     onSlotTap: (Int) -> Unit,
-    onSlotLongPress: (Int) -> Unit,
+    onSlotLongPressNoMove: (Int) -> Unit,
     onLauncherTap: () -> Unit,
     onLauncherLongPress: () -> Unit,
-    onSwapDock: (Int, Int) -> Unit,
+    onDrop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
     val movedThresholdPx = remember(density) { with(density) { 12.dp.toPx() } }
 
-    // ドラッグ状態(DockBar 内に閉じる)
-    var draggingSlot by remember { mutableStateOf<Int?>(null) }
-    var fingerPos by remember { mutableStateOf(Offset.Zero) }
-    var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var draggedCellSize by remember { mutableStateOf(Offset.Zero) }
-    // 各スロットの矩形(DockBar ルート座標)。ドロップ先算出に使う。
-    val slotBounds = remember { mutableStateMapOf<Int, Rect>() }
-
     val shape = RoundedCornerShape(28.dp)
-    Box(modifier = modifier.onGloballyPositioned { rootCoords = it }) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(84.dp)
-                .clip(shape)
-                // バー自体は半透明にして壁紙を透かす。中央のランチャーボタン(Azuki)は
-                // 別レイヤで不透明のまま残るため、そのまま強調される。
-                .background(PanelScrim.copy(alpha = 0.5f))
-                .border(1.dp, TileBorder, shape)
-                .padding(horizontal = 8.dp),
-        ) {
-            for (slot in listOf(0, 1)) {
-                DockSlot(
-                    slot = slot,
-                    item = dock.getOrNull(slot),
-                    isDragging = draggingSlot == slot,
-                    onTap = { onSlotTap(slot) },
-                    onLongPressNoMove = { onSlotLongPress(slot) },
-                    onSlotBounds = { rect -> slotBounds[slot] = rect },
-                    onDragStart = { pos, size -> draggingSlot = slot; fingerPos = pos; draggedCellSize = size },
-                    onDragMove = { pos -> fingerPos = pos },
-                    onDragEnd = {
-                        val from = draggingSlot
-                        if (from != null) {
-                            val to = slotBounds.entries.firstOrNull { it.value.contains(fingerPos) }?.key
-                            if (to != null && to != from) onSwapDock(from, to)
-                        }
-                        draggingSlot = null
-                    },
-                    onDragCancel = { draggingSlot = null },
-                    rootCoords = { rootCoords },
-                    movedThresholdPx = movedThresholdPx,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            LauncherButton(
-                onTap = onLauncherTap,
-                onLongPress = onLauncherLongPress,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(84.dp)
+            .clip(shape)
+            // バー自体は半透明にして壁紙を透かす。中央のランチャーボタン(Azuki)は
+            // 別レイヤで不透明のまま残るため、そのまま強調される。
+            .background(PanelScrim.copy(alpha = 0.5f))
+            .border(1.dp, TileBorder, shape)
+            .padding(horizontal = 8.dp),
+    ) {
+        for (slot in listOf(0, 1)) {
+            DockSlot(
+                slot = slot,
+                item = dock.getOrNull(slot),
+                isDragging = drag.isSource(DragOrigin.Dock(slot)),
+                drag = drag,
+                rootCoords = rootCoords,
+                movedThresholdPx = movedThresholdPx,
+                onTap = { onSlotTap(slot) },
+                onLongPressNoMove = { onSlotLongPressNoMove(slot) },
+                onDrop = onDrop,
+                modifier = Modifier.weight(1f),
             )
-            for (slot in listOf(2, 3)) {
-                DockSlot(
-                    slot = slot,
-                    item = dock.getOrNull(slot),
-                    isDragging = draggingSlot == slot,
-                    onTap = { onSlotTap(slot) },
-                    onLongPressNoMove = { onSlotLongPress(slot) },
-                    onSlotBounds = { rect -> slotBounds[slot] = rect },
-                    onDragStart = { pos, size -> draggingSlot = slot; fingerPos = pos; draggedCellSize = size },
-                    onDragMove = { pos -> fingerPos = pos },
-                    onDragEnd = {
-                        val from = draggingSlot
-                        if (from != null) {
-                            val to = slotBounds.entries.firstOrNull { it.value.contains(fingerPos) }?.key
-                            if (to != null && to != from) onSwapDock(from, to)
-                        }
-                        draggingSlot = null
-                    },
-                    onDragCancel = { draggingSlot = null },
-                    rootCoords = { rootCoords },
-                    movedThresholdPx = movedThresholdPx,
-                    modifier = Modifier.weight(1f),
-                )
-            }
         }
-
-        // 浮遊コピー(ドラッグ中のみ)。Box を掴んだセルの実寸に固定し、
-        // その半分でオフセットして中身の中心を指位置に厳密一致させる。
-        val dragSlot = draggingSlot
-        if (dragSlot != null) {
-            val dragItem = dock.getOrNull(dragSlot)
-            val cellW = with(density) { draggedCellSize.x.toDp() }
-            val cellH = with(density) { draggedCellSize.y.toDp() }
-            Box(
-                modifier = Modifier
-                    .size(cellW, cellH)
-                    .graphicsLayer {
-                        translationX = fingerPos.x - draggedCellSize.x / 2f
-                        translationY = fingerPos.y - draggedCellSize.y / 2f
-                        alpha = 0.9f
-                        scaleX = 1.1f
-                        scaleY = 1.1f
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                when (dragItem) {
-                    is DockItem.DockApp -> AppIcon(app = dragItem.app, size = 52.dp)
-                    is DockItem.DockFolder -> FolderPreview(folder = dragItem)
-                    null -> Unit
-                }
-            }
+        LauncherButton(
+            onTap = onLauncherTap,
+            onLongPress = onLauncherLongPress,
+        )
+        for (slot in listOf(2, 3)) {
+            DockSlot(
+                slot = slot,
+                item = dock.getOrNull(slot),
+                isDragging = drag.isSource(DragOrigin.Dock(slot)),
+                drag = drag,
+                rootCoords = rootCoords,
+                movedThresholdPx = movedThresholdPx,
+                onTap = { onSlotTap(slot) },
+                onLongPressNoMove = { onSlotLongPressNoMove(slot) },
+                onDrop = onDrop,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -189,15 +135,12 @@ private fun DockSlot(
     slot: Int,
     item: DockItem?,
     isDragging: Boolean,
-    onTap: () -> Unit,
-    onLongPressNoMove: () -> Unit,
-    onSlotBounds: (Rect) -> Unit,
-    onDragStart: (fingerPos: Offset, cellSize: Offset) -> Unit,
-    onDragMove: (fingerPos: Offset) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit,
+    drag: DragController,
     rootCoords: () -> LayoutCoordinates?,
     movedThresholdPx: Float,
+    onTap: () -> Unit,
+    onLongPressNoMove: () -> Unit,
+    onDrop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val graph = LocalGraph.current
@@ -221,7 +164,7 @@ private fun DockSlot(
     var innerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var totalDrag by remember { mutableStateOf(Offset.Zero) }
 
-    fun toDock(local: Offset): Offset {
+    fun toRoot(local: Offset): Offset {
         val root = rootCoords() ?: return local
         val inner = innerCoords ?: return local
         return root.localPositionOf(inner, local)
@@ -231,14 +174,15 @@ private fun DockSlot(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .onGloballyPositioned { coords ->
-                // スロットの当たり判定矩形は外側 Box(セル幅全体)を root 座標で記録する。
+                // スロットの当たり判定矩形は外側 Box(セル幅全体)を root 座標で報告する。
                 val root = rootCoords()
                 if (root != null) {
                     val topLeft = root.localPositionOf(coords, Offset.Zero)
-                    onSlotBounds(
+                    drag.reportDockSlot(
+                        slot,
                         Rect(topLeft, androidx.compose.ui.geometry.Size(
                             coords.size.width.toFloat(), coords.size.height.toFloat(),
-                        ))
+                        )),
                     )
                 }
             },
@@ -247,7 +191,7 @@ private fun DockSlot(
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                // 内側 Box の座標を取得(toDock の変換基準)
+                // 内側 Box の座標を取得(toRoot の変換基準)
                 .onGloballyPositioned { innerCoords = it }
                 .graphicsLayer {
                     scaleX = scale
@@ -263,23 +207,23 @@ private fun DockSlot(
                             totalDrag = Offset.Zero
                             if (draggable) {
                                 val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
-                                onDragStart(toDock(local), size)
+                                drag.startDock(slot, item, toRoot(local), size)
                             }
                         },
                         onDrag = { change, delta ->
                             change.consume()
                             totalDrag += delta
-                            if (draggable) onDragMove(toDock(change.position))
+                            if (draggable) drag.move(toRoot(change.position))
                         },
                         onDragEnd = {
                             if (!draggable || totalDrag.getDistance() < movedThresholdPx) {
-                                onDragCancel()
+                                if (draggable) drag.reset()
                                 onLongPressNoMove()
                             } else {
-                                onDragEnd()
+                                onDrop()
                             }
                         },
-                        onDragCancel = { onDragCancel() },
+                        onDragCancel = { drag.reset() },
                     )
                 }
                 .combinedClickable(

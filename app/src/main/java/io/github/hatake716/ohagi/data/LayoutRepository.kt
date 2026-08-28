@@ -117,6 +117,76 @@ class LayoutRepository(context: Context) {
         }
     }
 
+    // ---- 領域跨ぎ移動(アプリのみ) ----
+
+    /**
+     * ホームのアプリをドックへ移動する。ドック先が空なら移動(ホーム側は空に)、
+     * 非空アプリなら入替(型変換)。フォルダは対象外(呼び出し側で弾く)。
+     */
+    fun moveHomeToDock(homeIndex: Int, dockSlot: Int) {
+        update { state ->
+            if (homeIndex !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
+            val homeItem = state.home[homeIndex] as? HomeItem.HomeApp ?: return@update state
+            val home = state.home.toMutableList()
+            val dock = state.dock.toMutableList()
+            when (val dst = dock[dockSlot]) {
+                null -> {
+                    dock[dockSlot] = DockItem.DockApp(homeItem.app)
+                    home[homeIndex] = null
+                }
+                is DockItem.DockApp -> {
+                    // 入替: ドックのアプリをホームへ、ホームのアプリをドックへ
+                    dock[dockSlot] = DockItem.DockApp(homeItem.app)
+                    home[homeIndex] = HomeItem.HomeApp(dst.app)
+                }
+                is DockItem.DockFolder -> return@update state // フォルダ先には落とさない
+            }
+            state.copy(home = home, dock = dock)
+        }
+    }
+
+    /** ドックのアプリをホームへ移動する(対称)。 */
+    fun moveDockToHome(dockSlot: Int, homeIndex: Int) {
+        update { state ->
+            if (homeIndex !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
+            val dockItem = state.dock[dockSlot] as? DockItem.DockApp ?: return@update state
+            val home = state.home.toMutableList()
+            val dock = state.dock.toMutableList()
+            when (val dst = home[homeIndex]) {
+                null -> {
+                    home[homeIndex] = HomeItem.HomeApp(dockItem.app)
+                    dock[dockSlot] = null
+                }
+                is HomeItem.HomeApp -> {
+                    home[homeIndex] = HomeItem.HomeApp(dockItem.app)
+                    dock[dockSlot] = DockItem.DockApp(dst.app)
+                }
+                is HomeItem.HomeFolder -> return@update state
+            }
+            state.copy(home = home, dock = dock)
+        }
+    }
+
+    /** ドロワーからホームの指定セルへアプリを設置する(空/アプリセルは上書き、フォルダは不可)。 */
+    fun placeAppOnHome(index: Int, app: AppRef) {
+        update { state ->
+            if (index !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (state.home[index] is HomeItem.HomeFolder) return@update state
+            state.copy(home = state.home.toMutableList().apply { this[index] = HomeItem.HomeApp(app) })
+        }
+    }
+
+    /** ドロワーからドックの指定スロットへアプリを設置する(空/アプリスロットは上書き、フォルダは不可)。 */
+    fun placeAppOnDock(slot: Int, app: AppRef) {
+        update { state ->
+            if (slot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
+            if (state.dock[slot] is DockItem.DockFolder) return@update state
+            state.copy(dock = state.dock.toMutableList().apply { this[slot] = DockItem.DockApp(app) })
+        }
+    }
+
     // ---- ドック操作 ----
 
     /** ドックの 2 スロットの中身を入れ替える(空きスロット=null との入替も可)。 */

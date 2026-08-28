@@ -7,6 +7,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -48,7 +49,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppInfo
+import io.github.hatake716.ohagi.ui.dragdrop.DragController
+import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
 import io.github.hatake716.ohagi.ui.common.AppIcon
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
@@ -70,15 +79,21 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 @Composable
 fun AppDrawer(
     apps: List<AppInfo>,
+    drag: DragController,
+    rootCoords: () -> LayoutCoordinates?,
     onLaunch: (AppInfo) -> Unit,
     onAddToWorkspace: (AppInfo) -> Unit,
     onAddToDock: (AppInfo) -> Unit,
     onAppInfo: (AppInfo) -> Unit,
     onUninstall: (AppInfo) -> Unit,
     onOpenDefaultHome: () -> Unit,
+    /** ドラッグ確定(親が設置/削除しドロワーを閉じる)。 */
+    onDrop: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // ドラッグ中(ドロワー発)はドロワーを透過し、背後のホーム/ドック/削除エリアを見せる。
+    val dragging = drag.isDragging && drag.isSource(DragOrigin.Drawer)
     var query by remember { mutableStateOf("") }
     var menuTarget by remember { mutableStateOf<AppInfo?>(null) }
 
@@ -91,15 +106,21 @@ fun AppDrawer(
     Column(
         modifier = modifier
             .fillMaxSize()
-            // 背後の壁紙がうっすら透ける半透明。視認性のため暗色ベースは残す。
-            .background(Ink.copy(alpha = 0.55f))
-            // 背面のワークスペースへタッチが抜けないように吸収する
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) {}
+            // ドラッグ中は暗幕を消して背後(ホーム/ドック/削除エリア)を見せる。
+            .background(if (dragging) Color.Transparent else Ink.copy(alpha = 0.55f))
+            // 非ドラッグ時のみ背面へのタッチを吸収(ドラッグ中は各セルの pointerInput に委ねる)。
+            .then(
+                if (dragging) Modifier
+                else Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+            )
             // ステータスバー/ナビバー/IME/ディスプレイカットアウトすべてを避ける
             .safeDrawingPadding()
+            // ドラッグ中はドロワーの中身(バー/検索/グリッド)を透明化して背後を見せる。
+            // ツリーには残すことで、ドラッグを握っているセルの pointerInput を生かし続ける。
+            .graphicsLayer { alpha = if (dragging) 0f else 1f }
     ) {
         // 上部バー: タイトル + 閉じるボタン
         Row(
@@ -174,8 +195,11 @@ fun AppDrawer(
                 ) { app ->
                     DrawerCell(
                         app = app,
+                        drag = drag,
+                        rootCoords = rootCoords,
                         onTap = { onLaunch(app) },
-                        onLongPress = { menuTarget = app },
+                        onLongPressNoMove = { menuTarget = app },
+                        onDrop = onDrop,
                     )
                 }
             }
@@ -209,13 +233,16 @@ fun AppDrawer(
     }
 }
 
-/** ドロワーの 1 セル。押下時に spring でわずかに縮む。 */
+/** ドロワーの 1 セル。長押し→動かすとドラッグ、動かさず離すとメニュー。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DrawerCell(
     app: AppInfo,
+    drag: DragController,
+    rootCoords: () -> LayoutCoordinates?,
     onTap: () -> Unit,
-    onLongPress: () -> Unit,
+    onLongPressNoMove: () -> Unit,
+    onDrop: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
@@ -228,32 +255,72 @@ private fun DrawerCell(
         label = "drawerCellScale",
     )
 
+    val density = LocalDensity.current
+    val movedThresholdPx = remember(density) { with(density) { 12.dp.toPx() } }
+    var cellCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var totalDrag by remember { mutableStateOf(Offset.Zero) }
+    var started by remember { mutableStateOf(false) }
+
+    fun toRoot(local: Offset): Offset {
+        val root = rootCoords() ?: return local
+        val cell = cellCoords ?: return local
+        return root.localPositionOf(cell, local)
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .onGloballyPositioned { cellCoords = it }
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .clip(RoundedCornerShape(18.dp))
+            // 長押し→動かすとドラッグ開始、動かさず離すとメニュー。
+            // ドロワーは閉じず、このセルの pointerInput がドラッグ完了まで追従を担う。
+            .pointerInput(app) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { _ ->
+                        totalDrag = Offset.Zero
+                        started = false
+                    },
+                    onDrag = { change, delta ->
+                        change.consume()
+                        totalDrag += delta
+                        if (!started && totalDrag.getDistance() >= movedThresholdPx) {
+                            started = true
+                            val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
+                            drag.startDrawer(app.ref, toRoot(change.position), size)
+                        }
+                        // 開始後は毎フレーム指のルート座標を流す(ドロワーを閉じないので途切れない)。
+                        if (started) drag.move(toRoot(change.position))
+                    },
+                    onDragEnd = {
+                        if (started) onDrop() else onLongPressNoMove()
+                        started = false
+                    },
+                    onDragCancel = {
+                        if (started) drag.reset() else onLongPressNoMove()
+                        started = false
+                    },
+                )
+            }
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null, // 押下スケールで代替
                 onClick = onTap,
-                onLongClick = onLongPress,
             )
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
         AppIcon(app = app.ref, size = 56.dp)
         Spacer(Modifier.height(6.dp))
-        // iOS ホーム風: アイコン下に最大 2 行のラベル。詰めた行間・わずかな字間で、
-        // 2 行分の高さを予約して(heightIn)行揃えを安定させる。
+        // iOS ホーム風: アイコン下に最大 2 行のラベル。半透明背景で読めるよう白系。
         Text(
             text = app.label,
             fontSize = 12.sp,
             lineHeight = 14.sp,
             letterSpacing = 0.1.sp,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = Kome,
             maxLines = 2,
             minLines = 1,
             overflow = TextOverflow.Ellipsis,
