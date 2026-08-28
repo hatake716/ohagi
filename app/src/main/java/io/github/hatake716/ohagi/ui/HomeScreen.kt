@@ -206,8 +206,9 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             }
             existing.second.id
         } else {
-            // 自動スクロールは LaunchedEffect(layout.columns) が担う
-            graph.layoutRepository.addColumnAfter(focusedIndex, app)
+            // niri と同じく、新しいウィンドウは常にリボンの右端(既存ウィンドウの右)に開く。
+            // 末尾への自動スクロールは LaunchedEffect(layout.columns) が担う。
+            graph.layoutRepository.addColumnAfter(null, app)
         }
         scope.launch {
             val rect = awaitStableTileRect(tileId)

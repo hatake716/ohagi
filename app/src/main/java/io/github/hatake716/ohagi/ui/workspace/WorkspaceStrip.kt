@@ -254,12 +254,19 @@ private fun TileCard(
     val apps by graph.appRepository.apps.collectAsState()
     val label = remember(tile.app, apps) { graph.appRepository.labelOf(tile.app) }
 
+    // フォーカス中は小豆色の縁取り。非フォーカスは控えめな白縁。
     val borderColor by animateColorAsState(
         targetValue = if (focused) Azuki else TileBorder,
         animationSpec = spring(stiffness = 380f),
         label = "tileBorder",
     )
-    val shape = RoundedCornerShape(24.dp)
+    val borderWidth by animateFloatAsState(
+        targetValue = if (focused) 2.5f else 1f,
+        animationSpec = spring(stiffness = 380f),
+        label = "tileBorderWidth",
+    )
+    // macOS ライクな大きめの角丸
+    val shape = RoundedCornerShape(28.dp)
 
     Box(
         contentAlignment = Alignment.Center,
@@ -282,7 +289,7 @@ private fun TileCard(
                 )
             )
             .border(
-                width = if (focused) 2.dp else 1.dp,
+                width = borderWidth.dp,
                 color = borderColor,
                 shape = shape,
             )
