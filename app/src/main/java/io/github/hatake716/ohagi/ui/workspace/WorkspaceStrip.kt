@@ -35,8 +35,10 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -121,8 +123,16 @@ fun WorkspaceStrip(
         return
     }
 
-    val focusedIndex by rememberFocusedColumnIndex(listState)
+    val centerFocusedIndex by rememberFocusedColumnIndex(listState)
     val scope = rememberCoroutineScope()
+
+    // タップで選ばれたカラムを、スクロールが中央に到達するまで先行してアクティブ表示する。
+    // 到達後(手動スクロール時など)はビューポート中央のカラムをフォーカスとする。
+    var pendingFocus by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(centerFocusedIndex, pendingFocus) {
+        if (pendingFocus == centerFocusedIndex) pendingFocus = null
+    }
+    val focusedIndex = pendingFocus ?: centerFocusedIndex
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val viewportWidth = maxWidth
@@ -152,8 +162,11 @@ fun WorkspaceStrip(
                     width = viewportWidth * columnWidthFraction(column.widthPreset, isPortrait),
                     onTileTap = { tile ->
                         if (focused) {
+                            // 既にアクティブなタイル: アプリを開く
                             onLaunchTile(column, tile)
                         } else {
+                            // 隣のタイル: 即座にアクティブ化し、画面をそのカラムへ滑らかに遷移させる
+                            pendingFocus = index
                             scope.launch { listState.centerOnColumn(index) }
                         }
                     },
