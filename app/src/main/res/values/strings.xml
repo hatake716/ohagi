@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ohagi</string>
+
+    <!-- 共通アクション -->
+    <string name="action_launch">起動</string>
+    <string name="action_split_launch">分割起動</string>
+    <string name="action_remove">削除</string>
+    <string name="action_app_info">アプリ情報</string>
+    <string name="action_uninstall">アンインストール</string>
+    <string name="action_cancel">キャンセル</string>
+    <string name="action_ok">OK</string>
+    <string name="action_add">追加</string>
+    <string name="action_search">検索</string>
+    <string name="action_rename">名前を変更</string>
+
+    <!-- タイルメニュー -->
+    <string name="menu_add_tile_below">下に分割して追加</string>
+    <string name="menu_add_tile_above">上に分割して追加</string>
+    <string name="menu_add_tile_left">左に分割して追加</string>
+    <string name="menu_add_tile_right">右に分割して追加</string>
+    <string name="menu_swap_tiles">タイルを入れ替え</string>
+    <string name="menu_cycle_width">カラム幅を切り替え</string>
+    <string name="menu_move_left">カラムを左へ移動</string>
+    <string name="menu_move_right">カラムを右へ移動</string>
+    <string name="menu_remove_tile">ワークスペースから削除</string>
+
+    <!-- ホームメニュー -->
+    <string name="menu_change_wallpaper">壁紙を変更</string>
+    <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
+    <string name="menu_add_app">アプリを追加</string>
+    <string name="menu_about">ohagi について</string>
+
+    <!-- ワークスペース -->
+    <string name="workspace_empty_title">ワークスペースは空です</string>
+    <string name="workspace_empty_hint">タップしてアプリを追加\n下中央のボタンでアプリ一覧を開けます</string>
+
+    <!-- ドロワー/ピッカー -->
+    <string name="drawer_title">アプリ一覧</string>
+    <string name="picker_title">アプリを選択</string>
+    <string name="search_apps_hint">アプリを検索</string>
+    <string name="drawer_add_to_workspace">ワークスペースに追加</string>
+    <string name="drawer_add_to_dock">ドックに追加</string>
+
+    <!-- ドック -->
+    <string name="dock_slot_empty">空きスロット</string>
+    <string name="dock_assign_app">アプリを割り当て</string>
+    <string name="dock_create_folder">フォルダを作成</string>
+    <string name="dock_convert_to_folder">フォルダに変換</string>
+    <string name="dock_folder_default_name">フォルダ</string>
+    <string name="dock_open_drawer">アプリ一覧を開く</string>
+    <string name="dock_slot_pick_title">どのスロットに追加しますか?</string>
+
+    <!-- トースト/エラー -->
+    <string name="toast_launch_failed">アプリを起動できませんでした</string>
+    <string name="toast_split_unsupported">この端末では分割起動がサポートされていない可能性があります</string>
+    <string name="toast_dock_full">ドックに空きスロットがありません</string>
+
+    <!-- About -->
+    <string name="about_text">ohagi — niri 風のスクロール型タイルランチャー\nバージョン %1$s</string>
+</resources>
