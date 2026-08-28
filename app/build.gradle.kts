@@ -81,7 +81,5 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.datastore)
     implementation(libs.kotlinx.serialization.json)
-    // フリーフォームウィンドウ起動(setLaunchWindowingMode)のための hidden API 例外登録
-    implementation(libs.hiddenapibypass)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

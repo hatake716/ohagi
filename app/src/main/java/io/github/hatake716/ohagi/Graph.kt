@@ -31,12 +31,20 @@ class Graph(context: Context) {
                     val visible = apps.mapTo(mutableSetOf()) { it.ref.packageName }
                     val layout = layoutRepository.state.value
                     val referenced = buildSet {
-                        layout.panes.forEach { add(it.app.packageName) }
                         layout.dock.forEach { item ->
                             when (item) {
                                 is io.github.hatake716.ohagi.data.DockItem.DockApp ->
                                     add(item.app.packageName)
                                 is io.github.hatake716.ohagi.data.DockItem.DockFolder ->
+                                    item.apps.forEach { add(it.packageName) }
+                                null -> Unit
+                            }
+                        }
+                        layout.home.forEach { item ->
+                            when (item) {
+                                is io.github.hatake716.ohagi.data.HomeItem.HomeApp ->
+                                    add(item.app.packageName)
+                                is io.github.hatake716.ohagi.data.HomeItem.HomeFolder ->
                                     item.apps.forEach { add(it.packageName) }
                                 null -> Unit
                             }

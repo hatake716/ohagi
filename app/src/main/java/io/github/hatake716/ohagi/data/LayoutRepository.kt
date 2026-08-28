@@ -78,68 +78,57 @@ class LayoutRepository(context: Context) {
                 dock + List(LayoutState.DOCK_SLOT_COUNT - dock.size) { null }
             else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
         }
-        val panesFixed = panes
-            .distinctBy { it.app }
-            .take(LayoutState.MAX_PANES)
-        return copy(panes = panesFixed, dock = dockFixed)
-    }
-
-    // ---- ワークスペース(タイリング)操作 ----
-
-    /**
-     * アプリをタイリングに追加する。
-     * - 既に開いているアプリなら何もしない(そのペインへフォーカスは呼び出し側で行う)。
-     * - 満杯([MAX_PANES] 枚)なら、最も古いペイン(先頭)を押し出して末尾に追加する。
-     * 追加(または既存)ペインの id を返す。
-     */
-    fun addPane(app: AppRef): String {
-        val existing = state.value.panes.firstOrNull { it.app == app }
-        if (existing != null) return existing.id
-        val paneId = newId()
-        update { s ->
-            if (s.panes.any { it.app == app }) return@update s
-            val pane = Pane(paneId, app)
-            val panes = if (s.panes.size >= LayoutState.MAX_PANES) {
-                s.panes.drop(1) + pane
-            } else {
-                s.panes + pane
-            }
-            s.copy(panes = panes)
+        val homeFixed = when {
+            home.size == LayoutState.HOME_CELL_COUNT -> home
+            home.size < LayoutState.HOME_CELL_COUNT ->
+                home + List(LayoutState.HOME_CELL_COUNT - home.size) { null }
+            else -> home.take(LayoutState.HOME_CELL_COUNT)
         }
-        return paneId
+        return copy(home = homeFixed, dock = dockFixed)
     }
 
-    /** ペインを閉じる(タイリングから外す)。 */
-    fun removePane(paneId: String) {
-        update { s -> s.copy(panes = s.panes.filterNot { it.id == paneId }) }
-    }
+    // ---- ホームグリッド操作 ----
 
-    /** すべてのペインを閉じる。 */
-    fun clearPanes() {
-        update { s -> s.copy(panes = emptyList()) }
-    }
-
-    /** ペインをマスター(先頭)に昇格させる。 */
-    fun promotePane(paneId: String) {
-        update { s ->
-            val pane = s.panes.firstOrNull { it.id == paneId } ?: return@update s
-            s.copy(panes = listOf(pane) + s.panes.filterNot { it.id == paneId })
+    /** ホームグリッドの 1 セルを設定/クリアする。 */
+    fun setHomeItem(index: Int, item: HomeItem?) {
+        update { state ->
+            if (index !in 0 until LayoutState.HOME_CELL_COUNT) state
+            else state.copy(home = state.home.toMutableList().apply { this[index] = item })
         }
     }
 
-    /** 2 つのペインの位置を入れ替える。 */
-    fun swapPanes(idA: String, idB: String) {
-        update { s ->
-            val ia = s.panes.indexOfFirst { it.id == idA }
-            val ib = s.panes.indexOfFirst { it.id == idB }
-            if (ia < 0 || ib < 0) return@update s
-            val list = s.panes.toMutableList()
-            val tmp = list[ia]; list[ia] = list[ib]; list[ib] = tmp
-            s.copy(panes = list)
+    /** ホームの空きセルにアプリを置く。アプリ入りセルには置けない(no-op)。 */
+    fun addAppToHomeSlot(index: Int, app: AppRef) {
+        update { state ->
+            if (index !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (state.home[index] != null) return@update state
+            state.copy(home = state.home.toMutableList().apply { this[index] = HomeItem.HomeApp(app) })
+        }
+    }
+
+    /** ホームグリッドの 2 セルの中身を入れ替える(空きセル=null との入替も可)。 */
+    fun swapHomeItems(a: Int, b: Int) {
+        update { state ->
+            val n = LayoutState.HOME_CELL_COUNT
+            if (a == b || a !in 0 until n || b !in 0 until n) return@update state
+            val home = state.home.toMutableList()
+            val tmp = home[a]; home[a] = home[b]; home[b] = tmp
+            state.copy(home = home)
         }
     }
 
     // ---- ドック操作 ----
+
+    /** ドックの 2 スロットの中身を入れ替える(空きスロット=null との入替も可)。 */
+    fun swapDockItems(a: Int, b: Int) {
+        update { state ->
+            val n = LayoutState.DOCK_SLOT_COUNT
+            if (a == b || a !in 0 until n || b !in 0 until n) return@update state
+            val dock = state.dock.toMutableList()
+            val tmp = dock[a]; dock[a] = dock[b]; dock[b] = tmp
+            state.copy(dock = dock)
+        }
+    }
 
     fun setDockItem(slot: Int, item: DockItem?) {
         update { state ->
@@ -218,7 +207,6 @@ class LayoutRepository(context: Context) {
     /** アンインストールされたアプリへの参照をレイアウトから取り除く。 */
     fun pruneMissingPackages(installedPackages: Set<String>) {
         update { state ->
-            val panes = state.panes.filter { it.app.packageName in installedPackages }
             val dock = state.dock.map { item ->
                 when (item) {
                     null -> null
@@ -228,7 +216,16 @@ class LayoutRepository(context: Context) {
                         item.copy(apps = item.apps.filter { it.packageName in installedPackages })
                 }
             }
-            state.copy(panes = panes, dock = dock)
+            val home = state.home.map { item ->
+                when (item) {
+                    null -> null
+                    is HomeItem.HomeApp ->
+                        if (item.app.packageName in installedPackages) item else null
+                    is HomeItem.HomeFolder ->
+                        item.copy(apps = item.apps.filter { it.packageName in installedPackages })
+                }
+            }
+            state.copy(home = home, dock = dock)
         }
     }
 }

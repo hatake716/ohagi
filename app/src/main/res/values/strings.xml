@@ -13,24 +13,18 @@
     <string name="action_search">検索</string>
     <string name="action_rename">名前を変更</string>
 
-    <!-- ペイン(タイリング)メニュー -->
-    <string name="menu_make_master">マスターにする</string>
-    <string name="menu_close_pane">このアプリを閉じる</string>
-    <string name="menu_close_all">すべて閉じる</string>
-    <string name="menu_retile">タイルを並べ直す</string>
-    <string name="toast_retile_hint">開いているウィンドウを一度閉じてから並べ直します</string>
-
-    <!-- ホームメニュー -->
-    <string name="menu_change_wallpaper">壁紙を変更</string>
-    <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
+    <!-- ホーム/ドロワー共通 -->
     <string name="menu_add_app">アプリを追加</string>
-    <string name="menu_about">ohagi について</string>
+    <string name="menu_split_open">分割で 2 アプリを開く</string>
+    <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
 
     <!-- ドロワー/ピッカー -->
     <string name="drawer_title">アプリ一覧</string>
     <string name="picker_title">アプリを選択</string>
+    <string name="picker_split_first_title">分割で開く 1 つ目のアプリ</string>
+    <string name="picker_split_second_title">分割で開くもう 1 つのアプリ</string>
     <string name="search_apps_hint">アプリを検索</string>
-    <string name="drawer_add_to_workspace">タイルに開く</string>
+    <string name="drawer_add_to_workspace">分割で開く</string>
     <string name="drawer_add_to_dock">ドックに追加</string>
 
     <!-- ドック -->
@@ -46,7 +40,4 @@
     <string name="toast_launch_failed">アプリを起動できませんでした</string>
     <string name="toast_split_unsupported">この端末では分割起動がサポートされていない可能性があります</string>
     <string name="toast_dock_full">ドックに空きスロットがありません</string>
-
-    <!-- About -->
-    <string name="about_text">ohagi — タイリング型ランチャー\n1 画面に最大 3 アプリを並べて表示します\nバージョン %1$s</string>
 </resources>

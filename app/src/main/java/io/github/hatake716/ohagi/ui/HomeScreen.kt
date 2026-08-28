@@ -1,13 +1,15 @@
 package io.github.hatake716.ohagi.ui
 
 import android.app.Activity
-import android.content.res.Configuration
-import android.graphics.Rect
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -18,22 +20,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.GridView
-import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.Wallpaper
+import androidx.compose.material.icons.rounded.Splitscreen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,32 +42,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
-import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
-import io.github.hatake716.ohagi.data.LayoutState
-import io.github.hatake716.ohagi.data.Pane
-import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.dock.DockBar
 import io.github.hatake716.ohagi.ui.dock.FolderSheet
 import io.github.hatake716.ohagi.ui.drawer.AppDrawer
-import io.github.hatake716.ohagi.ui.workspace.TilingWorkspace
+import io.github.hatake716.ohagi.ui.home.HomeGrid
 import io.github.hatake716.ohagi.util.LaunchUtils
-import io.github.hatake716.ohagi.util.TilingManager
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
@@ -76,21 +70,25 @@ import kotlinx.coroutines.launch
 private sealed interface Overlay {
     data object None : Overlay
     data object Drawer : Overlay
-    data object HomeMenu : Overlay
-    data object About : Overlay
     data class FolderView(val slot: Int) : Overlay
     data class RenameFolder(val slot: Int) : Overlay
-    data class PaneMenu(val paneId: String) : Overlay
     data class SlotMenu(val slot: Int) : Overlay
     data class DockSlotChooser(val app: AppRef) : Overlay
+    /** ホームグリッドのセル長押しメニュー(index のセル) */
+    data class HomeItemMenu(val index: Int) : Overlay
     data class Picker(val target: PickTarget) : Overlay
 }
 
 /** アプリピッカーで選んだアプリの追加先 */
 private sealed interface PickTarget {
-    data object NewPane : PickTarget
     data class DockSlot(val slot: Int) : PickTarget
     data class FolderAdd(val slot: Int) : PickTarget
+    /** ホームグリッドの index セルに置く。 */
+    data class HomeSlot(val index: Int) : PickTarget
+    /** 分割で開く 1 つ目を選ぶ(選ぶと [SplitSecond] に進む)。 */
+    data object SplitFirst : PickTarget
+    /** 分割で開く 2 つ目を選ぶ(1 つ目は [first])。 */
+    data class SplitSecond(val first: AppRef) : PickTarget
 }
 
 @Composable
@@ -103,21 +101,32 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
     val layout by graph.layoutRepository.state.collectAsStateWithLifecycle()
     val apps by graph.appRepository.apps.collectAsStateWithLifecycle()
 
-    val configuration = LocalConfiguration.current
-    val isPortrait = configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
-
-    val freeform = remember { LaunchUtils.isFreeformAvailable(context) }
-
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
 
-    // タイリング領域(ドックを除いた実効領域, px)。ワークスペースのレイアウトから受け取る。
-    var tilingArea by remember { mutableStateOf<Rect?>(null) }
-    val gapPx = remember(density) { with(density) { 10.dp.toPx() }.toInt() }
+    // ---- ドックの賢い自動非表示 ----
+    // アプリをまだ一度も開いていないセッション初期は常時表示。
+    // アプリを開いたら隠し、下端エッジ上スワイプ or HOME 再押下で再表示する。
+    var hasLaunchedApp by remember { mutableStateOf(false) }
+    var dockVisible by remember { mutableStateOf(true) }
 
-    // HOME 再押下: オーバーレイを閉じる
+    // ohagi が前面に戻ったら(ON_RESUME): アプリを開いた実績があればドックは隠したまま、
+    // まだなら常時表示。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                dockVisible = !hasLaunchedApp
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // HOME 再押下: オーバーレイを閉じ、隠れているドックを呼び戻す(ホームに戻ってきた合図)。
     LaunchedEffect(Unit) {
         homeEvents.collect {
             overlay = Overlay.None
+            dockVisible = true
         }
     }
 
@@ -125,102 +134,135 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
     BackHandler(enabled = overlay == Overlay.None) { }
     BackHandler(enabled = overlay != Overlay.None) { overlay = Overlay.None }
 
-    fun launchApp(app: AppRef) = LaunchUtils.launch(context, app)
+    /** アプリを開いたことを記録し、ドックを隠す。 */
+    fun onAppLaunched() {
+        hasLaunchedApp = true
+        dockVisible = false
+    }
 
-    /** 現在の panes を計算矩形へタイリング配置して(再)起動する。 */
-    fun retile(panes: List<Pane>, onlyLast: Boolean) {
-        val area = tilingArea
-        if (!freeform || area == null || panes.isEmpty()) {
-            // フリーフォーム非対応 or 領域未確定なら、単に末尾(新規)を通常起動
-            panes.lastOrNull()?.let { launchApp(it.app) }
-            return
-        }
-        scope.launch {
-            TilingManager.retile(
-                context = context,
-                panes = panes,
-                tilingArea = area,
-                isPortrait = isPortrait,
-                gapPx = gapPx,
-                onlyLast = onlyLast,
-            )
-        }
+    /** 単体でフルスクリーン起動する。 */
+    fun openApp(app: AppRef) {
+        overlay = Overlay.None
+        LaunchUtils.launch(context, app)
+        onAppLaunched()
     }
 
     /**
-     * アプリをタイリングに開く。
-     * 既に開いていればそのペインを前面化、なければ追加(最大 [MAX_PANES]、超過分は最古を押し出し)。
-     * 追加後は全ペインを再タイリングして 1 画面に並べる。
+     * 2 アプリを OS 分割画面(split-screen)で開く。
+     * ohagi は HOME ランチャーのため「1 つ目を開く→ohagi に戻る→2 つ目を開く」という
+     * 順次操作では、戻る時点で必ず ON_RESUME を挟むため 1 つ目の記憶を保てない。
+     * よって split は「分割で開く」導線で 1 つの前面セッション内に 2 アプリを選び、
+     * まとめて起動する明示方式に一本化している。
      */
-    fun openApp(app: AppRef) {
-        val before = graph.layoutRepository.state.value.panes.size
-        graph.layoutRepository.addPane(app)
-        // addPane は非同期反映のため、次フレームの panes を使って retile する。
-        scope.launch {
-            delay(60)
-            val panes = graph.layoutRepository.state.value.panes
-            // ペイン数が増えた(分割数が変わった)ときは全ペインを開き直して並べ直す。
-            // 数が変わらない(既存アプリの前面化)ときは末尾だけで足りる。
-            retile(panes, onlyLast = panes.size == before)
-        }
+    fun openSplit(first: AppRef, second: AppRef) {
+        overlay = Overlay.None
+        scope.launch { LaunchUtils.launchSplit(context, first, second) }
+        onAppLaunched()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 上スワイプでドロワーを開く
+        // 背面ジェスチャ層: 主画面は壁紙のみ(ミニマル)。
+        // - 画面中〜上部からの大きい上スワイプ → ドロワーを開く。
+        // - 画面下端付近からの上スワイプ → 隠れたドックを一時表示する。
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
+                    // 閾値・画面高はジェスチャ発生時の live な値を使う。
+                    // configChanges 宣言で回転しても Activity は再生成されず pointerInput(Unit) も
+                    // 貼り直されないため、ブロック先頭で size.height を固定すると回転後に破綻する。
+                    val edgeThresholdPx = with(density) { 120.dp.toPx() }
+                    val smallSwipePx = with(density) { 40.dp.toPx() }
+                    val drawerSwipePx = with(density) { 120.dp.toPx() }
                     var dragged = 0f
+                    var fromBottomEdge = false
                     detectVerticalDragGestures(
-                        onDragStart = { dragged = 0f },
+                        onDragStart = { offset ->
+                            dragged = 0f
+                            // 開始位置が下端エッジ内か(その時点の実画面高で判定)
+                            fromBottomEdge = offset.y > size.height - edgeThresholdPx
+                        },
                         onVerticalDrag = { _, dragAmount -> dragged += dragAmount },
                         onDragEnd = {
-                            if (dragged < -120.dp.toPx() && overlay == Overlay.None) {
-                                overlay = Overlay.Drawer
+                            when {
+                                // 下端からの上スワイプ → ドックを一時表示
+                                fromBottomEdge && dragged < -smallSwipePx &&
+                                    overlay == Overlay.None -> {
+                                    dockVisible = true
+                                }
+                                // それ以外の大きい上スワイプ → ドロワー
+                                dragged < -drawerSwipePx && overlay == Overlay.None -> {
+                                    overlay = Overlay.Drawer
+                                }
                             }
                         },
                     )
                 }
-        ) {
-            TilingWorkspace(
-                panes = layout.panes,
-                isPortrait = isPortrait,
-                // ペインをタップ: そのアプリのウィンドウを前面化(タイル位置で再起動)
-                onPaneTap = { pane -> launchApp(pane.app) },
-                onPaneLongPress = { pane -> overlay = Overlay.PaneMenu(pane.id) },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(bottom = DOCK_RESERVED_HEIGHT)
-                    .onGloballyPositioned { coords ->
-                        val b = coords.boundsInWindow()
-                        tilingArea = Rect(
-                            b.left.toInt(), b.top.toInt(),
-                            b.right.toInt(), b.bottom.toInt(),
-                        )
-                    },
-            )
-        }
+        )
 
-        DockBar(
-            dock = layout.dock,
-            onSlotTap = { slot ->
-                when (val item = layout.dock.getOrNull(slot)) {
-                    is DockItem.DockApp -> openApp(item.app)
-                    is DockItem.DockFolder -> overlay = Overlay.FolderView(slot)
-                    null -> overlay = Overlay.Picker(PickTarget.DockSlot(slot))
+        // ホーム主画面のアイコングリッド(壁紙の上)。
+        // ステータスバーを避け、下はドックの高さ分を空ける。userScrollEnabled=false なので
+        // グリッド外余白の上スワイプは背面ジェスチャ層に届き、ドロワー起動を妨げない。
+        HomeGrid(
+            home = layout.home,
+            onCellTap = { index ->
+                when (val item = layout.home.getOrNull(index)) {
+                    is HomeItem.HomeApp -> openApp(item.app)
+                    is HomeItem.HomeFolder -> Unit // フォルダ生成 UI は未実装
+                    null -> overlay = Overlay.Picker(PickTarget.HomeSlot(index))
                 }
             },
-            onSlotLongPress = { slot -> overlay = Overlay.SlotMenu(slot) },
-            onLauncherTap = { overlay = Overlay.Drawer },
-            onLauncherLongPress = { overlay = Overlay.HomeMenu },
+            onCellLongPress = { index ->
+                if (layout.home.getOrNull(index) is HomeItem.HomeApp) {
+                    overlay = Overlay.HomeItemMenu(index)
+                } else {
+                    // 空きセル長押しでも追加できるようにする
+                    overlay = Overlay.Picker(PickTarget.HomeSlot(index))
+                }
+            },
+            onSwap = { from, to -> graph.layoutRepository.swapHomeItems(from, to) },
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(bottom = HOME_GRID_BOTTOM_RESERVED),
         )
+
+        // ドック(自動非表示・iOS風スプリング)。BottomCenter にオーバーレイ配置。
+        AnimatedVisibility(
+            visible = dockVisible,
+            enter = slideInVertically(
+                animationSpec = spring(
+                    dampingRatio = 0.8f,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+            ) { it } + fadeIn(),
+            exit = slideOutVertically(
+                animationSpec = spring(
+                    dampingRatio = 0.9f,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+            ) { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            DockBar(
+                dock = layout.dock,
+                onSlotTap = { slot ->
+                    when (val item = layout.dock.getOrNull(slot)) {
+                        is DockItem.DockApp -> openApp(item.app)
+                        is DockItem.DockFolder -> overlay = Overlay.FolderView(slot)
+                        null -> overlay = Overlay.Picker(PickTarget.DockSlot(slot))
+                    }
+                },
+                onSlotLongPress = { slot -> overlay = Overlay.SlotMenu(slot) },
+                onLauncherTap = { overlay = Overlay.Drawer },
+                // 中央ボタン長押し = 分割画面の設定(1 つ目 → 2 つ目を選ぶ)のみ
+                onLauncherLongPress = { overlay = Overlay.Picker(PickTarget.SplitFirst) },
+                onSwapDock = { from, to -> graph.layoutRepository.swapDockItems(from, to) },
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
 
         // ドロワー表示中(開閉アニメーション含む)は背面へのタッチを遮断する
         if (overlay == Overlay.Drawer) {
@@ -237,21 +279,32 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             )
         }
 
+        // ドロワー: 下からの弾性スプリングでせり上がり + スケールイン + フェード(iPhone風)
         AnimatedVisibility(
             visible = overlay == Overlay.Drawer,
-            enter = slideInVertically(initialOffsetY = { it / 4 }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it / 4 }) + fadeOut(),
+            enter = slideInVertically(
+                animationSpec = spring(
+                    dampingRatio = 0.78f,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+            ) { it } + scaleIn(
+                initialScale = 0.92f,
+                animationSpec = spring(
+                    dampingRatio = 0.8f,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+            ) + fadeIn(),
+            exit = slideOutVertically(
+                animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMedium),
+            ) { it } + scaleOut(targetScale = 0.92f) + fadeOut(),
             modifier = Modifier.fillMaxSize(),
         ) {
             AppDrawer(
                 apps = apps,
-                onLaunch = { app ->
-                    overlay = Overlay.None
-                    openApp(app.ref)
-                },
+                onLaunch = { app -> openApp(app.ref) },
                 onAddToWorkspace = { app ->
-                    overlay = Overlay.None
-                    openApp(app.ref)
+                    // 「分割で開く」: このアプリを 1 つ目にして、2 つ目の相方を選ばせる。
+                    overlay = Overlay.Picker(PickTarget.SplitSecond(app.ref))
                 },
                 onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
                 onAppInfo = { app ->
@@ -262,6 +315,9 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                     overlay = Overlay.None
                     LaunchUtils.requestUninstall(context, app.ref.packageName)
                 },
+                onOpenDefaultHome = {
+                    (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
+                },
                 onDismiss = { overlay = Overlay.None },
             )
         }
@@ -270,45 +326,39 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
     // ---- シート/ダイアログ類 ----
 
     when (val current = overlay) {
-        is Overlay.PaneMenu -> {
-            val pane = layout.panes.firstOrNull { it.id == current.paneId }
-            if (pane == null) {
+        is Overlay.HomeItemMenu -> {
+            val item = layout.home.getOrNull(current.index) as? HomeItem.HomeApp
+            if (item == null) {
                 overlay = Overlay.None
             } else {
-                val isMaster = layout.panes.firstOrNull()?.id == pane.id
-                val entries = buildList {
-                    add(MenuEntry(stringResource(R.string.action_launch), Icons.Rounded.PlayArrow) {
-                        launchApp(pane.app)
-                    })
-                    if (!isMaster && layout.panes.size >= 2) {
-                        add(MenuEntry(stringResource(R.string.menu_make_master), Icons.Rounded.Star) {
-                            graph.layoutRepository.promotePane(pane.id)
-                            scope.launch {
-                                delay(60)
-                                retile(graph.layoutRepository.state.value.panes, onlyLast = false)
-                            }
-                        })
-                    }
-                    add(MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
-                        LaunchUtils.openAppInfo(context, pane.app.packageName)
-                    })
-                    add(MenuEntry(
-                        stringResource(R.string.menu_close_pane),
-                        Icons.Rounded.Delete,
-                        destructive = true,
-                    ) {
-                        graph.layoutRepository.removePane(pane.id)
-                        scope.launch {
-                            delay(60)
-                            val rest = graph.layoutRepository.state.value.panes
-                            if (rest.isNotEmpty()) retile(rest, onlyLast = false)
-                        }
-                    })
-                }
+                val app = item.app
                 MenuSheet(
-                    entries = entries,
+                    entries = listOf(
+                        MenuEntry(stringResource(R.string.action_launch), Icons.Rounded.PlayArrow) {
+                            openApp(app)
+                        },
+                        MenuEntry(stringResource(R.string.menu_split_open), Icons.Rounded.Splitscreen) {
+                            overlay = Overlay.Picker(PickTarget.SplitSecond(app))
+                        },
+                        MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
+                            LaunchUtils.openAppInfo(context, app.packageName)
+                        },
+                        MenuEntry(
+                            stringResource(R.string.action_remove),
+                            Icons.Rounded.Delete,
+                            destructive = true,
+                        ) {
+                            graph.layoutRepository.setHomeItem(current.index, null)
+                        },
+                        MenuEntry(
+                            stringResource(R.string.action_uninstall),
+                            Icons.Rounded.Delete,
+                            destructive = true,
+                        ) {
+                            LaunchUtils.requestUninstall(context, app.packageName)
+                        },
+                    ),
                     onDismiss = { if (overlay == current) overlay = Overlay.None },
-                    header = { PaneMenuHeader(pane.app) },
                 )
             }
         }
@@ -368,7 +418,7 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             val folder = layout.dock.getOrNull(current.slot) as? DockItem.DockFolder
             if (folder == null) {
                 LaunchedEffect(current) {
-                    delay(600)
+                    kotlinx.coroutines.delay(600)
                     if (overlay == current &&
                         layout.dock.getOrNull(current.slot) !is DockItem.DockFolder
                     ) {
@@ -379,10 +429,7 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                 FolderSheet(
                     folderName = folder.name,
                     apps = folder.apps,
-                    onLaunch = { app ->
-                        overlay = Overlay.None
-                        openApp(app)
-                    },
+                    onLaunch = { app -> openApp(app) },
                     onAddApps = { overlay = Overlay.Picker(PickTarget.FolderAdd(current.slot)) },
                     onRemoveApp = { app ->
                         graph.layoutRepository.removeAppFromFolder(current.slot, app)
@@ -449,21 +496,46 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
 
         is Overlay.Picker -> {
             val target = current.target
-            val excluded = if (target is PickTarget.FolderAdd) {
-                (layout.dock.getOrNull(target.slot) as? DockItem.DockFolder)
-                    ?.apps?.toSet() ?: emptySet()
-            } else {
-                emptySet()
+            val excluded = when (target) {
+                is PickTarget.FolderAdd ->
+                    (layout.dock.getOrNull(target.slot) as? DockItem.DockFolder)
+                        ?.apps?.toSet() ?: emptySet()
+                // 分割の 2 つ目に 1 つ目と同じアプリは選べない
+                is PickTarget.SplitSecond -> setOf(target.first)
+                else -> emptySet()
+            }
+            val pickerTitle = when (target) {
+                is PickTarget.SplitFirst -> stringResource(R.string.picker_split_first_title)
+                is PickTarget.SplitSecond -> stringResource(R.string.picker_split_second_title)
+                else -> stringResource(R.string.picker_title)
             }
             AppPickerSheet(
                 apps = apps,
                 multiSelect = target is PickTarget.FolderAdd,
                 excluded = excluded,
+                title = pickerTitle,
                 onConfirm = { picked ->
-                    applyPick(graph.layoutRepository, target, picked) { app -> openApp(app) }
-                    overlay = when (target) {
-                        is PickTarget.FolderAdd -> Overlay.FolderView(target.slot)
-                        else -> Overlay.None
+                    val first = picked.firstOrNull()
+                    when (target) {
+                        // openApp / openSplit は内部で overlay を閉じる
+                        // 1 つ目を選んだら 2 つ目の選択へ進む
+                        is PickTarget.SplitFirst ->
+                            overlay = if (first != null) {
+                                Overlay.Picker(PickTarget.SplitSecond(first.ref))
+                            } else Overlay.None
+                        is PickTarget.SplitSecond -> first?.let { openSplit(target.first, it.ref) }
+                        is PickTarget.HomeSlot -> {
+                            first?.let { graph.layoutRepository.addAppToHomeSlot(target.index, it.ref) }
+                            overlay = Overlay.None
+                        }
+                        is PickTarget.DockSlot -> {
+                            first?.let { graph.layoutRepository.addAppToDockSlot(target.slot, it.ref) }
+                            overlay = Overlay.None
+                        }
+                        is PickTarget.FolderAdd -> {
+                            graph.layoutRepository.addAppsToFolder(target.slot, picked.map { it.ref })
+                            overlay = Overlay.FolderView(target.slot)
+                        }
                     }
                 },
                 onDismiss = {
@@ -475,86 +547,7 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             )
         }
 
-        Overlay.HomeMenu -> {
-            val entries = buildList {
-                add(MenuEntry(stringResource(R.string.menu_add_app), Icons.Rounded.Add) {
-                    overlay = Overlay.Picker(PickTarget.NewPane)
-                })
-                if (layout.panes.size >= 2) {
-                    add(MenuEntry(stringResource(R.string.menu_retile), Icons.Rounded.GridView) {
-                        // 全ペインを新しいタイル位置で開き直す(整列)。
-                        // 既存ウィンドウは前面化されるだけなので、事前に一度閉じるヒントを出す。
-                        Toast.makeText(context, R.string.toast_retile_hint, Toast.LENGTH_SHORT).show()
-                        retile(layout.panes, onlyLast = false)
-                    })
-                }
-                add(MenuEntry(stringResource(R.string.menu_close_all), Icons.Rounded.Close) {
-                    graph.layoutRepository.clearPanes()
-                })
-                add(MenuEntry(stringResource(R.string.menu_change_wallpaper), Icons.Rounded.Wallpaper) {
-                    LaunchUtils.openWallpaperPicker(context)
-                })
-                add(MenuEntry(stringResource(R.string.menu_set_default_home), Icons.Rounded.Home) {
-                    (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
-                })
-                add(MenuEntry(stringResource(R.string.menu_about), Icons.Rounded.Info) {
-                    overlay = Overlay.About
-                })
-            }
-            MenuSheet(
-                entries = entries,
-                onDismiss = { if (overlay == current) overlay = Overlay.None },
-            )
-        }
-
-        Overlay.About -> {
-            val versionName = remember {
-                try {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
-                } catch (_: Exception) {
-                    null
-                } ?: "?"
-            }
-            AlertDialog(
-                onDismissRequest = { overlay = Overlay.None },
-                confirmButton = {
-                    TextButton(onClick = { overlay = Overlay.None }) {
-                        Text(stringResource(R.string.action_ok))
-                    }
-                },
-                text = { Text(stringResource(R.string.about_text, versionName)) },
-            )
-        }
-
         Overlay.Drawer, Overlay.None -> Unit
-    }
-}
-
-private fun applyPick(
-    repository: io.github.hatake716.ohagi.data.LayoutRepository,
-    target: PickTarget,
-    picked: List<AppInfo>,
-    openApp: (AppRef) -> Unit,
-) {
-    val first = picked.firstOrNull() ?: return
-    when (target) {
-        is PickTarget.NewPane -> openApp(first.ref)
-        is PickTarget.DockSlot -> repository.addAppToDockSlot(target.slot, first.ref)
-        is PickTarget.FolderAdd -> repository.addAppsToFolder(target.slot, picked.map { it.ref })
-    }
-}
-
-@Composable
-private fun PaneMenuHeader(app: AppRef) {
-    val graph = LocalGraph.current
-    val label = remember(app) { graph.appRepository.labelOf(app) }
-    androidx.compose.foundation.layout.Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-    ) {
-        AppIcon(app = app, size = 36.dp)
-        androidx.compose.foundation.layout.Spacer(Modifier.padding(start = 14.dp))
-        Text(text = label)
     }
 }
 
@@ -588,4 +581,5 @@ private fun RenameFolderDialog(
     )
 }
 
-private val DOCK_RESERVED_HEIGHT = 104.dp
+/** ホームグリッド下部に確保するドック領域の高さ(ドック本体 84dp + 上下マージン)。 */
+private val HOME_GRID_BOTTOM_RESERVED = 104.dp

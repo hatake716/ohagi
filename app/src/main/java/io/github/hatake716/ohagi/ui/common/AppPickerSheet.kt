@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.data.AppRef
+import io.github.hatake716.ohagi.ui.theme.Ink
+import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
  * アプリ選択用の共通ボトムシート。
@@ -61,7 +63,14 @@ fun AppPickerSheet(
             .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        // ドロワーと同じく半透明にして背後の壁紙をうっすら透かす。
+        containerColor = Ink.copy(alpha = 0.55f),
+        // 半透明の暗背景に対し、文字・アイコンを白系にして視認性を確保する。
+        contentColor = Kome,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

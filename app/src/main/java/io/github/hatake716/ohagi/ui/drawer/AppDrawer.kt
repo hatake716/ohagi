@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Dock
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,12 +53,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.ui.common.AppIcon
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.theme.Ink
+import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
  * アプリドロワー(全画面オーバーレイ)。
@@ -71,6 +75,7 @@ fun AppDrawer(
     onAddToDock: (AppInfo) -> Unit,
     onAppInfo: (AppInfo) -> Unit,
     onUninstall: (AppInfo) -> Unit,
+    onOpenDefaultHome: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -86,7 +91,8 @@ fun AppDrawer(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Ink.copy(alpha = 0.97f))
+            // 背後の壁紙がうっすら透ける半透明。視認性のため暗色ベースは残す。
+            .background(Ink.copy(alpha = 0.55f))
             // 背面のワークスペースへタッチが抜けないように吸収する
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -105,12 +111,22 @@ fun AppDrawer(
             Text(
                 text = stringResource(R.string.drawer_title),
                 style = MaterialTheme.typography.titleLarge,
+                color = Kome,
                 modifier = Modifier.weight(1f),
             )
+            // デフォルトホーム設定(ランチャーとして必須の導線)
+            IconButton(onClick = onOpenDefaultHome) {
+                Icon(
+                    imageVector = Icons.Rounded.Settings,
+                    contentDescription = stringResource(R.string.menu_set_default_home),
+                    tint = Kome,
+                )
+            }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
                     contentDescription = null,
+                    tint = Kome,
                 )
             }
         }
@@ -144,9 +160,10 @@ fun AppDrawer(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 84.dp),
+                // iOS ホームと同じ 4 列固定グリッド
+                columns = GridCells.Fixed(4),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -229,13 +246,21 @@ private fun DrawerCell(
     ) {
         AppIcon(app = app.ref, size = 56.dp)
         Spacer(Modifier.height(6.dp))
+        // iOS ホーム風: アイコン下に最大 2 行のラベル。詰めた行間・わずかな字間で、
+        // 2 行分の高さを予約して(heightIn)行揃えを安定させる。
         Text(
             text = app.label,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
+            fontSize = 12.sp,
+            lineHeight = 14.sp,
+            letterSpacing = 0.1.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            minLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 30.dp),
         )
     }
 }
