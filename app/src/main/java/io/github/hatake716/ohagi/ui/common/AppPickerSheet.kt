@@ -244,6 +244,7 @@ internal fun PickerAppCell(
         Text(
             text = app.label,
             style = MaterialTheme.typography.bodySmall,
+            color = Kome,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,

@@ -2,16 +2,10 @@ package io.github.hatake716.ohagi.ui.dock
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,10 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -50,11 +42,11 @@ import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
+import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
 import io.github.hatake716.ohagi.ui.common.animateIosPressScale
-import io.github.hatake716.ohagi.ui.common.iosIconShape
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
@@ -62,7 +54,6 @@ import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
 import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
 import io.github.hatake716.ohagi.ui.theme.Azuki
-import io.github.hatake716.ohagi.ui.theme.AzukiDeep
 import io.github.hatake716.ohagi.ui.theme.Kome
 import io.github.hatake716.ohagi.ui.theme.TileBorder
 
@@ -77,8 +68,6 @@ fun DockBar(
     labelOf: (AppRef) -> String,
     onSlotTap: (Int) -> Unit,
     onSlotMenu: (Int) -> Unit,
-    onLauncherTap: () -> Unit,
-    onLauncherLongPress: () -> Unit,
     onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
     canStack: (Int, DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
@@ -108,30 +97,7 @@ fun DockBar(
             .border(0.75.dp, TileBorder.copy(alpha = 0.72f), shape)
             .padding(horizontal = 8.dp),
     ) {
-        for (slot in listOf(0, 1)) {
-            DockSlot(
-                slot = slot,
-                item = dock.getOrNull(slot),
-                activeDrag = activeDrag,
-                labelOf = labelOf,
-                isDragging = activeDrag == DragPayload.FromDock(slot),
-                onTap = { onSlotTap(slot) },
-                onMenu = { onSlotMenu(slot) },
-                onDrop = { payload, position, stack ->
-                    onDrop(slot, payload, position, stack)
-                },
-                canStack = { payload -> canStack(slot, payload) },
-                onDragMoved = onDragMoved,
-                onDragSessionStarted = onDragSessionStarted,
-                onDragSessionEnded = onDragSessionEnded,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        LauncherButton(
-            onTap = onLauncherTap,
-            onLongPress = onLauncherLongPress,
-        )
-        for (slot in listOf(2, 3)) {
+        for (slot in 0 until LayoutState.DOCK_SLOT_COUNT) {
             DockSlot(
                 slot = slot,
                 item = dock.getOrNull(slot),
@@ -296,88 +262,6 @@ private fun DockSlot(
                     .offset(x = 6.dp, y = (-6).dp),
                 size = 20.dp,
             )
-        }
-    }
-}
-
-/** 中央ランチャーボタン。タップ／長押しのどちらでもAppライブラリを開く。 */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun LauncherButton(
-    onTap: () -> Unit,
-    onLongPress: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
-        pressed = pressed,
-        pressedScale = 0.93f,
-        label = "launcherScale",
-    )
-    val haptic = LocalHapticFeedback.current
-    val size = 56.dp
-    val shape = iosIconShape(size)
-    val launcherDescription = stringResource(R.string.dock_open_drawer)
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .shadow(
-                elevation = 5.dp,
-                shape = shape,
-                clip = false,
-                ambientColor = Color.Black.copy(alpha = 0.24f),
-                spotColor = AzukiDeep.copy(alpha = 0.36f),
-            )
-            .size(size)
-            .clip(shape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Azuki.copy(alpha = 0.98f), AzukiDeep.copy(alpha = 0.98f)),
-                ),
-            )
-            .border(0.75.dp, Color.White.copy(alpha = 0.24f), shape)
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onTap,
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongPress()
-                },
-            )
-            .semantics { contentDescription = launcherDescription },
-    ) {
-        LauncherGridGlyph()
-    }
-}
-
-/** Apple固有アセットを使わず、App Libraryを連想できる3x3グリッドを自前描画する。 */
-@Composable
-private fun LauncherGridGlyph() {
-    Canvas(Modifier.size(27.dp)) {
-        val tile = size.minDimension * 0.20f
-        val gap = size.minDimension * 0.105f
-        val contentSize = tile * 3f + gap * 2f
-        val startX = (size.width - contentSize) / 2f
-        val startY = (size.height - contentSize) / 2f
-        for (row in 0..2) {
-            for (column in 0..2) {
-                drawRoundRect(
-                    color = Kome.copy(alpha = if (row == 1 && column == 1) 1f else 0.9f),
-                    topLeft = Offset(
-                        x = startX + column * (tile + gap),
-                        y = startY + row * (tile + gap),
-                    ),
-                    size = Size(tile, tile),
-                    cornerRadius = CornerRadius(tile * 0.28f, tile * 0.28f),
-                )
-            }
         }
     }
 }

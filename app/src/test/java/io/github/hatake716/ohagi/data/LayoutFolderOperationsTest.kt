@@ -235,6 +235,52 @@ class LayoutFolderOperationsTest {
         assertNull(result.home[4])
     }
 
+    @Test
+    fun legacyFourSlotDockMigrationKeepsSidesAndOpensCenter() {
+        val oldDock = listOf(
+            DockItem.DockApp(app("left-first")),
+            DockItem.DockFolder("Left", listOf(app("left-second"))),
+            DockItem.DockApp(app("right-first")),
+            DockItem.DockFolder("Right", listOf(app("right-second"))),
+        )
+
+        val migrated = migrateLegacyFourSlotDock(oldDock)
+
+        assertEquals(LayoutState.DOCK_SLOT_COUNT, migrated.size)
+        assertEquals(oldDock[0], migrated[0])
+        assertEquals(oldDock[1], migrated[1])
+        assertNull(migrated[2])
+        assertEquals(oldDock[2], migrated[3])
+        assertEquals(oldDock[3], migrated[4])
+    }
+
+    @Test
+    fun configurableDockAcceptsAppsAndFoldersInNewSlots() {
+        val moved = app("center-slot")
+        val appState = layout(home = mapOf(0 to HomeItem.HomeApp(moved)))
+
+        val appResult = appState.moveHomeItemToDock(homeIndex = 0, dockSlot = 2)
+
+        assertNull(appResult.home[0])
+        assertEquals(DockItem.DockApp(moved), appResult.dock[2])
+
+        val folder = HomeItem.HomeFolder("Fifth", listOf(app("inside")))
+        val folderState = layout(home = mapOf(1 to folder))
+
+        val folderResult = folderState.moveHomeItemToDock(homeIndex = 1, dockSlot = 2)
+
+        assertNull(folderResult.home[1])
+        assertEquals(DockItem.DockFolder(folder.name, folder.apps), folderResult.dock[2])
+
+        val rightmost = app("rightmost-slot")
+        val rightmostState = layout(home = mapOf(2 to HomeItem.HomeApp(rightmost)))
+
+        val rightmostResult = rightmostState.moveHomeItemToDock(homeIndex = 2, dockSlot = 4)
+
+        assertNull(rightmostResult.home[2])
+        assertEquals(DockItem.DockApp(rightmost), rightmostResult.dock[4])
+    }
+
     private fun layout(
         home: Map<Int, HomeItem> = emptyMap(),
         dock: Map<Int, DockItem> = emptyMap(),

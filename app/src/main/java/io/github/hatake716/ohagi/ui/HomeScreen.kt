@@ -796,12 +796,6 @@ fun HomeScreen(
                     }
                 },
                 onSlotMenu = { slot -> overlay = Overlay.SlotMenu(slot) },
-                onLauncherTap = {
-                    scope.launch { pagerState.animateScrollToPage(appLibraryPage) }
-                },
-                onLauncherLongPress = {
-                    scope.launch { pagerState.animateScrollToPage(appLibraryPage) }
-                },
                 onDrop = ::routeDropOnDock,
                 canStack = ::canStackOnDock,
                 onDragMoved = ::updateDragPosition,

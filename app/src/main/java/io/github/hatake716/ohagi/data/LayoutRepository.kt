@@ -25,6 +25,19 @@ private val json = Json {
     encodeDefaults = true
 }
 
+private const val LEGACY_DOCK_SLOT_COUNT = 4
+private const val NEW_DOCK_CENTER_SLOT = 2
+
+/** 旧4枠Dockの左右位置を保ち、新しい中央枠だけを空けた5枠Dockへ変換する。 */
+internal fun migrateLegacyFourSlotDock(oldDock: List<DockItem?>): List<DockItem?> {
+    if (oldDock.size != LEGACY_DOCK_SLOT_COUNT) return oldDock
+    return buildList(LayoutState.DOCK_SLOT_COUNT) {
+        addAll(oldDock.take(NEW_DOCK_CENTER_SLOT))
+        add(null)
+        addAll(oldDock.drop(NEW_DOCK_CENTER_SLOT))
+    }
+}
+
 private object LayoutStateSerializer : Serializer<LayoutState> {
     override val defaultValue: LayoutState = LayoutState()
 
@@ -83,11 +96,16 @@ class LayoutRepository(context: Context) {
     }
 
     private fun LayoutState.normalized(): LayoutState {
+        val migratedDock = when {
+            dock.size == LEGACY_DOCK_SLOT_COUNT ->
+                migrateLegacyFourSlotDock(dock)
+            else -> dock
+        }
         val dockFixed = when {
-            dock.size == LayoutState.DOCK_SLOT_COUNT -> dock
-            dock.size < LayoutState.DOCK_SLOT_COUNT ->
-                dock + List(LayoutState.DOCK_SLOT_COUNT - dock.size) { null }
-            else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
+            migratedDock.size == LayoutState.DOCK_SLOT_COUNT -> migratedDock
+            migratedDock.size < LayoutState.DOCK_SLOT_COUNT ->
+                migratedDock + List(LayoutState.DOCK_SLOT_COUNT - migratedDock.size) { null }
+            else -> migratedDock.take(LayoutState.DOCK_SLOT_COUNT)
         }
         val migratedHome = when {
             version < LayoutState.CURRENT_VERSION && home.size == LEGACY_HOME_CELL_COUNT ->

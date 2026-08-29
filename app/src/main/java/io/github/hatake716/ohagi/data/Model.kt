@@ -85,7 +85,7 @@ data class FolderContent(
 /**
  * 永続化されるレイアウト全体。
  * home: 24セル単位で連結したホームページ。既存JSONの24セルはそのまま1ページ目になる。
- * dock: 下部ドックの 4 スロット。
+ * dock: 下部ドックの 5 スロット。すべてアプリまたはフォルダを配置できる。
  * widgets: 左端のウィジェット専用ページへ置くAppWidgetHostのインスタンス。
  *
  * split-screen 方式では実ウィンドウはすべて OS のタスク/分割画面管理下にあり、
@@ -97,6 +97,7 @@ data class LayoutState(
     val home: List<HomeItem?> = List(HOME_CELL_COUNT) { null },
     val dock: List<DockItem?> = List(DOCK_SLOT_COUNT) { null },
     val widgets: List<WidgetPlacement> = emptyList(),
+    // v7: Dock中央の固定ランチャーボタンを、通常の5番目スロットへ置換。
     // v6: homeを24セル単位の複数ページとして扱い、ウィジェット専用ページを追加。
     // v5: ホームグリッドを 5列×6行から 4列×6行へ変更。
     // v4: ホームアイコングリッド(home)を追加。旧 v3 json に home が無くても
@@ -104,8 +105,8 @@ data class LayoutState(
     val version: Int = CURRENT_VERSION,
 ) {
     companion object {
-        const val CURRENT_VERSION = 6
-        const val DOCK_SLOT_COUNT = 4
+        const val CURRENT_VERSION = 7
+        const val DOCK_SLOT_COUNT = 5
         const val HOME_COLUMNS = 4
         const val HOME_ROWS = 6
         /** 1ホームページあたりのセル数。 */

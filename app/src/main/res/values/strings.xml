@@ -53,7 +53,6 @@
     <string name="folder_add_apps">アプリを追加</string>
     <string name="folder_remove_app">%1$sをフォルダから削除</string>
     <string name="folder_create_with_apps">フォルダを作成</string>
-    <string name="dock_open_drawer">アプリ一覧を開く</string>
     <string name="dock_slot_pick_title">どのスロットに追加しますか?</string>
 
     <!-- ウィジェット専用ページ -->
