@@ -27,6 +27,7 @@ import java.util.Locale
 data class AppInfo(
     val ref: AppRef,
     val label: String,
+    val category: AppCategory,
 )
 
 /**
@@ -119,10 +120,16 @@ class AppRepository(private val context: Context) {
             .filter { it.activityInfo != null }
             .filter { it.activityInfo.packageName != context.packageName }
             .map {
+                val packageName = it.activityInfo.packageName
+                val label = it.loadLabel(pm)?.toString() ?: packageName
                 AppInfo(
-                    ref = AppRef(it.activityInfo.packageName, it.activityInfo.name),
-                    label = it.loadLabel(pm)?.toString()
-                        ?: it.activityInfo.packageName,
+                    ref = AppRef(packageName, it.activityInfo.name),
+                    label = label,
+                    category = categorizeApp(
+                        packageName = packageName,
+                        label = label,
+                        androidCategory = it.activityInfo.applicationInfo.category,
+                    ),
                 )
             }
             .distinctBy { it.ref }

@@ -55,13 +55,15 @@ sealed interface HomeItem {
 data class LayoutState(
     val home: List<HomeItem?> = List(HOME_CELL_COUNT) { null },
     val dock: List<DockItem?> = List(DOCK_SLOT_COUNT) { null },
+    // v5: ホームグリッドを 5列×6行から 4列×6行へ変更。
     // v4: ホームアイコングリッド(home)を追加。旧 v3 json に home が無くても
     // Json { ignoreUnknownKeys = true } + デフォルト値で安全に移行される。
-    val version: Int = 4,
+    val version: Int = CURRENT_VERSION,
 ) {
     companion object {
+        const val CURRENT_VERSION = 5
         const val DOCK_SLOT_COUNT = 4
-        const val HOME_COLUMNS = 5
+        const val HOME_COLUMNS = 4
         const val HOME_ROWS = 6
         const val HOME_CELL_COUNT = HOME_COLUMNS * HOME_ROWS
     }

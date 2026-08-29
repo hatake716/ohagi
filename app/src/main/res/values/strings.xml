@@ -8,10 +8,14 @@
     <string name="action_app_info">アプリ情報</string>
     <string name="action_uninstall">アンインストール</string>
     <string name="action_cancel">キャンセル</string>
+    <string name="action_close">閉じる</string>
     <string name="action_ok">OK</string>
     <string name="action_add">追加</string>
+    <string name="action_add_count">追加（%1$d）</string>
     <string name="action_search">検索</string>
+    <string name="action_clear_search">検索内容を消去</string>
     <string name="action_rename">名前を変更</string>
+    <string name="action_more">その他の操作</string>
 
     <!-- ホーム/ドロワー共通 -->
     <string name="menu_add_app">アプリを追加</string>
@@ -19,13 +23,30 @@
     <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
 
     <!-- ドロワー/ピッカー -->
-    <string name="drawer_title">アプリ一覧</string>
+    <string name="drawer_title">Appライブラリ</string>
     <string name="picker_title">アプリを選択</string>
     <string name="picker_split_first_title">分割で開く 1 つ目のアプリ</string>
     <string name="picker_split_second_title">分割で開くもう 1 つのアプリ</string>
     <string name="search_apps_hint">アプリを検索</string>
     <string name="drawer_add_to_workspace">分割で開く</string>
     <string name="drawer_add_to_dock">ドックに追加</string>
+
+    <!-- 自動カテゴリー -->
+    <string name="category_social">ソーシャル</string>
+    <string name="category_productivity_finance">仕事とファイナンス</string>
+    <string name="category_photo_video">写真とビデオ</string>
+    <string name="category_entertainment">エンターテインメント</string>
+    <string name="category_games">ゲーム</string>
+    <string name="category_news_reading">情報と読書</string>
+    <string name="category_travel_weather">旅行と天気</string>
+    <string name="category_shopping_food">買い物とフード</string>
+    <string name="category_health_fitness">健康とフィットネス</string>
+    <string name="category_utilities">ユーティリティ</string>
+    <string name="category_other">その他</string>
+    <string name="category_open">%1$sを開く</string>
+    <string name="category_back">カテゴリーに戻る</string>
+    <string name="category_no_apps">該当するアプリはありません</string>
+    <string name="app_selected">%1$sを選択済み</string>
 
     <!-- ドック -->
     <string name="dock_slot_empty">空きスロット</string>

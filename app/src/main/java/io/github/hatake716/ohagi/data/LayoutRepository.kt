@@ -79,12 +79,49 @@ class LayoutRepository(context: Context) {
             else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
         }
         val homeFixed = when {
+            version < LayoutState.CURRENT_VERSION && home.size == LEGACY_HOME_CELL_COUNT ->
+                migrateFiveBySixHome(home)
             home.size == LayoutState.HOME_CELL_COUNT -> home
             home.size < LayoutState.HOME_CELL_COUNT ->
                 home + List(LayoutState.HOME_CELL_COUNT - home.size) { null }
-            else -> home.take(LayoutState.HOME_CELL_COUNT)
+            // 未知の旧レイアウトでも、空セルを先に切り捨ててアプリを可能な限り保持する。
+            else -> home.filterNotNull().take(LayoutState.HOME_CELL_COUNT)
+                .let { compacted ->
+                    List(LayoutState.HOME_CELL_COUNT) { index -> compacted.getOrNull(index) }
+                }
         }
-        return copy(home = homeFixed, dock = dockFixed)
+        return copy(
+            home = homeFixed,
+            dock = dockFixed,
+            version = LayoutState.CURRENT_VERSION,
+        )
+    }
+
+    /**
+     * v4 の 5列×6行を v5 の 4列×6行へ安全に移す。
+     * 各行の左4セルは同じ行・列を保ち、旧5列目の項目は残りの空セルへ順に退避する。
+     */
+    private fun migrateFiveBySixHome(oldHome: List<HomeItem?>): List<HomeItem?> {
+        val migrated = MutableList<HomeItem?>(LayoutState.HOME_CELL_COUNT) { null }
+        val overflow = mutableListOf<HomeItem>()
+        repeat(LayoutState.HOME_ROWS) { row ->
+            repeat(LayoutState.HOME_COLUMNS) { column ->
+                migrated[row * LayoutState.HOME_COLUMNS + column] =
+                    oldHome.getOrNull(row * LEGACY_HOME_COLUMNS + column)
+            }
+            oldHome.getOrNull(row * LEGACY_HOME_COLUMNS + LayoutState.HOME_COLUMNS)
+                ?.let(overflow::add)
+        }
+        val emptyIndices = migrated.indices.filter { migrated[it] == null }.iterator()
+        overflow.forEach { item ->
+            if (emptyIndices.hasNext()) migrated[emptyIndices.next()] = item
+        }
+        return migrated
+    }
+
+    private companion object {
+        const val LEGACY_HOME_COLUMNS = 5
+        const val LEGACY_HOME_CELL_COUNT = 30
     }
 
     // ---- ホームグリッド操作 ----

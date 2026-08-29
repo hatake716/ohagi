@@ -1,6 +1,8 @@
 package io.github.hatake716.ohagi.ui.common
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,11 +18,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import io.github.hatake716.ohagi.ui.theme.Ink
+import io.github.hatake716.ohagi.ui.theme.Kome
 
 /** ボトムシートメニューの 1 項目 */
 data class MenuEntry(
@@ -41,7 +48,13 @@ fun MenuSheet(
     onDismiss: () -> Unit,
     header: (@Composable () -> Unit)? = null,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = IosSheetShape,
+        containerColor = Ink.copy(alpha = 0.92f),
+        contentColor = Kome,
+        scrimColor = Color.Black.copy(alpha = 0.32f),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -55,12 +68,27 @@ fun MenuSheet(
                     color = Color(0x22FFFFFF),
                 )
             }
-            entries.forEach { entry ->
+            entries.forEachIndexed { index, entry ->
+                val interactionSource = remember(entry.label) { MutableInteractionSource() }
+                val pressed by interactionSource.collectIsPressedAsState()
+                val scale = animateIosPressScale(
+                    pressed = pressed,
+                    pressedScale = 0.99f,
+                    label = "menuRowScale",
+                )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = if (pressed) 0.76f else 1f
+                        }
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                        ) {
                             onDismiss()
                             entry.onClick()
                         }
@@ -81,6 +109,12 @@ fun MenuSheet(
                         style = MaterialTheme.typography.bodyLarge,
                         color = if (entry.destructive) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                if (index != entries.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 64.dp, end = 20.dp),
+                        color = Color.White.copy(alpha = 0.08f),
                     )
                 }
             }
