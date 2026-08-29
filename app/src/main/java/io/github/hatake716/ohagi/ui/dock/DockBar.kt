@@ -1,12 +1,12 @@
 package io.github.hatake716.ohagi.ui.dock
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -15,17 +15,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,75 +32,98 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
+import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
-import io.github.hatake716.ohagi.ui.common.AppIcon
-import io.github.hatake716.ohagi.ui.dragdrop.DragController
-import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
+import io.github.hatake716.ohagi.ui.common.AppIconImage
+import io.github.hatake716.ohagi.ui.common.IosMoreButton
+import io.github.hatake716.ohagi.ui.common.IosFolderIcon
+import io.github.hatake716.ohagi.ui.common.animateIosPressScale
+import io.github.hatake716.ohagi.ui.common.iosIconShape
+import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
+import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
+import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
+import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
+import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
+import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
 import io.github.hatake716.ohagi.ui.theme.Azuki
 import io.github.hatake716.ohagi.ui.theme.AzukiDeep
 import io.github.hatake716.ohagi.ui.theme.Kome
-import io.github.hatake716.ohagi.ui.theme.PanelScrim
-import io.github.hatake716.ohagi.ui.theme.PanelScrimLight
 import io.github.hatake716.ohagi.ui.theme.TileBorder
 
 /**
- * 画面下部のドックバー。
- * [スロット0][スロット1][中央ランチャーボタン][スロット2][スロット3] の横一列で、
- * 壁紙の上に浮かぶ半透明パネルとして表示される。
- * 各スロットの意味付け(起動/フォルダを開く/割り当て)はホスト側が判断する。
+ * 画面下部に常時表示するドックバー。
+ * 各スロット自身が公式 Compose D&D の source/target になる。
  */
 @Composable
 fun DockBar(
     dock: List<DockItem?>,
-    drag: DragController,
-    rootCoords: () -> LayoutCoordinates?,
+    activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     onSlotTap: (Int) -> Unit,
-    onSlotLongPressNoMove: (Int) -> Unit,
+    onSlotMenu: (Int) -> Unit,
     onLauncherTap: () -> Unit,
     onLauncherLongPress: () -> Unit,
-    onDrop: () -> Unit,
+    onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (Int, DragPayload) -> Boolean,
+    onDragMoved: (Offset) -> Unit,
+    onDragSessionStarted: (DragPayload) -> Unit,
+    onDragSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val density = LocalDensity.current
-    val movedThresholdPx = remember(density) { with(density) { 12.dp.toPx() } }
-
-    val shape = RoundedCornerShape(28.dp)
+    val shape = RoundedCornerShape(30.dp)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
             .height(84.dp)
+            .shadow(
+                elevation = 14.dp,
+                shape = shape,
+                clip = false,
+                ambientColor = Color.Black.copy(alpha = 0.20f),
+                spotColor = Color.Black.copy(alpha = 0.28f),
+            )
             .clip(shape)
-            // バー自体は半透明にして壁紙を透かす。中央のランチャーボタン(Azuki)は
-            // 別レイヤで不透明のまま残るため、そのまま強調される。
-            .background(PanelScrim.copy(alpha = 0.5f))
-            .border(1.dp, TileBorder, shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0x8A27222B), Color(0xA317141A)),
+                ),
+            )
+            .border(0.75.dp, TileBorder.copy(alpha = 0.72f), shape)
             .padding(horizontal = 8.dp),
     ) {
         for (slot in listOf(0, 1)) {
             DockSlot(
                 slot = slot,
                 item = dock.getOrNull(slot),
-                isDragging = drag.isSource(DragOrigin.Dock(slot)),
-                drag = drag,
-                rootCoords = rootCoords,
-                movedThresholdPx = movedThresholdPx,
+                activeDrag = activeDrag,
+                labelOf = labelOf,
+                isDragging = activeDrag == DragPayload.FromDock(slot),
                 onTap = { onSlotTap(slot) },
-                onLongPressNoMove = { onSlotLongPressNoMove(slot) },
-                onDrop = onDrop,
+                onMenu = { onSlotMenu(slot) },
+                onDrop = { payload, position, stack ->
+                    onDrop(slot, payload, position, stack)
+                },
+                canStack = { payload -> canStack(slot, payload) },
+                onDragMoved = onDragMoved,
+                onDragSessionStarted = onDragSessionStarted,
+                onDragSessionEnded = onDragSessionEnded,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -115,127 +135,149 @@ fun DockBar(
             DockSlot(
                 slot = slot,
                 item = dock.getOrNull(slot),
-                isDragging = drag.isSource(DragOrigin.Dock(slot)),
-                drag = drag,
-                rootCoords = rootCoords,
-                movedThresholdPx = movedThresholdPx,
+                activeDrag = activeDrag,
+                labelOf = labelOf,
+                isDragging = activeDrag == DragPayload.FromDock(slot),
                 onTap = { onSlotTap(slot) },
-                onLongPressNoMove = { onSlotLongPressNoMove(slot) },
-                onDrop = onDrop,
+                onMenu = { onSlotMenu(slot) },
+                onDrop = { payload, position, stack ->
+                    onDrop(slot, payload, position, stack)
+                },
+                canStack = { payload -> canStack(slot, payload) },
+                onDragMoved = onDragMoved,
+                onDragSessionStarted = onDragSessionStarted,
+                onDragSessionEnded = onDragSessionEnded,
                 modifier = Modifier.weight(1f),
             )
         }
     }
 }
 
-/** ドックの 1 スロット。アプリ/フォルダ/空(+)のいずれかを表示する。 */
+/** ドックの1スロット。アプリ／フォルダ／空（+）のいずれかを表示する。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DockSlot(
     slot: Int,
     item: DockItem?,
+    activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     isDragging: Boolean,
-    drag: DragController,
-    rootCoords: () -> LayoutCoordinates?,
-    movedThresholdPx: Float,
     onTap: () -> Unit,
-    onLongPressNoMove: () -> Unit,
-    onDrop: () -> Unit,
+    onMenu: () -> Unit,
+    onDrop: (DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (DragPayload) -> Boolean,
+    onDragMoved: (Offset) -> Unit,
+    onDragSessionStarted: (DragPayload) -> Unit,
+    onDragSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val graph = LocalGraph.current
-    // TalkBack 向けのスロット説明(アプリ名/フォルダ名/空きスロット)。
-    val apps by graph.appRepository.apps.collectAsState()
     val description = when (item) {
-        is DockItem.DockApp -> remember(item, apps) { graph.appRepository.labelOf(item.app) }
+        is DockItem.DockApp -> labelOf(item.app)
         is DockItem.DockFolder -> item.name
         null -> stringResource(R.string.dock_slot_empty)
     }
 
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.9f else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = 520f),
+    var pressed by remember { mutableStateOf(false) }
+    val scale = animateIosPressScale(
+        pressed = pressed,
         label = "dockSlotScale",
     )
+    val haptic = LocalHapticFeedback.current
 
-    // pointerInput が乗る内側 Box の座標(ローカル座標→root 座標変換の基準)
-    var innerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var totalDrag by remember { mutableStateOf(Offset.Zero) }
+    val payload = item?.let { DragPayload.FromDock(slot) }
+    val dragIconApp = when (item) {
+        is DockItem.DockApp -> item.app
+        is DockItem.DockFolder -> item.apps.firstOrNull()
+        null -> null
+    }
+    val dragIcon by rememberAppIconBitmap(dragIconApp)
+    val folderDragIcons by rememberAppIconBitmaps(
+        (item as? DockItem.DockFolder)?.apps.orEmpty(),
+    )
 
-    fun toRoot(local: Offset): Offset {
-        val root = rootCoords() ?: return local
-        val inner = innerCoords ?: return local
-        return root.localPositionOf(inner, local)
+    var dropHovered by remember { mutableStateOf(false) }
+    var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
+    var folderReady by remember { mutableStateOf(false) }
+    val stackCandidate = activeDrag?.let(canStack) == true
+    val hoverColor by animateColorAsState(
+        targetValue = when {
+            folderReady -> Color.White.copy(alpha = 0.17f)
+            dropHovered -> Azuki.copy(alpha = 0.22f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "dockDropHover",
+    )
+    val dropTarget = rememberOhagiDropTarget(
+        onStarted = onDragSessionStarted,
+        onEntered = { dropHovered = true },
+        onMoved = { position ->
+            folderReady = stackCandidate &&
+                folderTargetBounds?.contains(position) == true
+            onDragMoved(position)
+        },
+        onExited = {
+            dropHovered = false
+            folderReady = false
+        },
+        onEnded = {
+            dropHovered = false
+            folderReady = false
+            onDragSessionEnded()
+        },
+        onDrop = { dropped, position ->
+            dropHovered = false
+            val stack = canStack(dropped) &&
+                folderTargetBounds?.contains(position) == true
+            folderReady = false
+            onDrop(dropped, position, stack)
+        },
+    )
+
+    val sourceModifier = if (payload == null) {
+        Modifier
+    } else {
+        Modifier.ohagiDragSource(
+            payload = payload,
+            icon = dragIcon,
+            folderIcons = folderDragIcons,
+            onTap = onTap,
+            onPressChanged = { pressed = it },
+            onDragStarted = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onDragSessionStarted(payload)
+            },
+        )
     }
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .onGloballyPositioned { coords ->
-                // スロットの当たり判定矩形は外側 Box(セル幅全体)を root 座標で報告する。
-                val root = rootCoords()
-                if (root != null) {
-                    val topLeft = root.localPositionOf(coords, Offset.Zero)
-                    drag.reportDockSlot(
-                        slot,
-                        Rect(topLeft, androidx.compose.ui.geometry.Size(
-                            coords.size.width.toFloat(), coords.size.height.toFloat(),
-                        )),
-                    )
-                }
-            },
+            .clip(RoundedCornerShape(18.dp))
+            .background(hoverColor)
+            .ohagiDropTarget(dropTarget),
     ) {
-        val draggable = item is DockItem.DockApp || item is DockItem.DockFolder
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                // 内側 Box の座標を取得(toRoot の変換基準)
-                .onGloballyPositioned { innerCoords = it }
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                 }
-                .alpha(if (isDragging) 0.35f else 1f)
+                .alpha(if (isDragging) 0.20f else 1f)
                 .size(64.dp)
-                .clip(RoundedCornerShape(18.dp))
-                // 長押し→ドラッグ。空きスロットはドラッグ対象にしない(動かしてもメニュー扱い)。
-                .pointerInput(item) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { local ->
-                            totalDrag = Offset.Zero
-                            if (draggable) {
-                                val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
-                                drag.startDock(slot, item, toRoot(local), size)
-                            }
-                        },
-                        onDrag = { change, delta ->
-                            change.consume()
-                            totalDrag += delta
-                            if (draggable) drag.move(toRoot(change.position))
-                        },
-                        onDragEnd = {
-                            if (!draggable || totalDrag.getDistance() < movedThresholdPx) {
-                                if (draggable) drag.reset()
-                                onLongPressNoMove()
-                            } else {
-                                onDrop()
-                            }
-                        },
-                        onDragCancel = { drag.reset() },
-                    )
-                }
-                .combinedClickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onTap,
-                )
+                .onGloballyPositioned { folderTargetBounds = it.boundsInRoot() }
+                .then(sourceModifier)
                 .semantics { contentDescription = description },
         ) {
             when (item) {
-                is DockItem.DockApp -> AppIcon(app = item.app, size = 52.dp)
-                is DockItem.DockFolder -> FolderPreview(folder = item)
+                is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = 52.dp)
+                is DockItem.DockFolder -> IosFolderIcon(
+                    apps = item.apps,
+                    size = 52.dp,
+                    highlighted = folderReady,
+                    preloadedIcons = folderDragIcons,
+                )
                 null -> Icon(
                     imageVector = Icons.Rounded.Add,
                     contentDescription = null,
@@ -243,44 +285,22 @@ private fun DockSlot(
                     modifier = Modifier.size(26.dp),
                 )
             }
-        }
-    }
-}
 
-/** フォルダスロットの 2x2 ミニグリッドプレビュー。空フォルダはフォルダアイコンを表示する。 */
-@Composable
-private fun FolderPreview(folder: DockItem.DockFolder) {
-    val shape = RoundedCornerShape(14.dp)
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(52.dp)
-            .clip(shape)
-            .background(PanelScrimLight)
-            .border(1.dp, TileBorder, shape),
-    ) {
-        if (folder.apps.isEmpty()) {
-            Icon(
-                imageVector = Icons.Rounded.Folder,
-                contentDescription = null,
-                tint = Kome.copy(alpha = 0.7f),
-                modifier = Modifier.size(24.dp),
+            IosMoreButton(
+                contentDescription = stringResource(R.string.action_more),
+                onClick = onMenu,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    // 48dpへ拡張されるアクセシブルなタッチ領域を、
+                    // アイコン中央の起動領域と重ねないよう外上方へ寄せる。
+                    .offset(x = 6.dp, y = (-6).dp),
+                size = 20.dp,
             )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                folder.apps.take(4).chunked(2).forEach { rowApps ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                        rowApps.forEach { app ->
-                            AppIcon(app = app, size = 20.dp)
-                        }
-                    }
-                }
-            }
         }
     }
 }
 
-/** 中央のランチャーボタン。タップでドロワー、長押しでホームメニューを開く。 */
+/** 中央ランチャーボタン。タップでドロワー、長押しで分割起動設定。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LauncherButton(
@@ -290,11 +310,15 @@ private fun LauncherButton(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.9f else 1f,
-        animationSpec = spring(dampingRatio = 0.55f, stiffness = 520f),
+    val scale = animateIosPressScale(
+        pressed = pressed,
+        pressedScale = 0.93f,
         label = "launcherScale",
     )
+    val haptic = LocalHapticFeedback.current
+    val size = 56.dp
+    val shape = iosIconShape(size)
+    val launcherDescription = stringResource(R.string.dock_open_drawer)
 
     Box(
         contentAlignment = Alignment.Center,
@@ -303,29 +327,57 @@ private fun LauncherButton(
                 scaleX = scale
                 scaleY = scale
             }
-            // 影で少し浮いた印象にする
             .shadow(
-                elevation = 8.dp,
-                shape = CircleShape,
+                elevation = 5.dp,
+                shape = shape,
                 clip = false,
-                ambientColor = AzukiDeep,
-                spotColor = AzukiDeep,
+                ambientColor = Color.Black.copy(alpha = 0.24f),
+                spotColor = AzukiDeep.copy(alpha = 0.36f),
             )
-            .size(56.dp)
-            .clip(CircleShape)
-            .background(Azuki)
+            .size(size)
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(Azuki.copy(alpha = 0.98f), AzukiDeep.copy(alpha = 0.98f)),
+                ),
+            )
+            .border(0.75.dp, Color.White.copy(alpha = 0.24f), shape)
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onTap,
-                onLongClick = onLongPress,
-            ),
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongPress()
+                },
+            )
+            .semantics { contentDescription = launcherDescription },
     ) {
-        Icon(
-            imageVector = Icons.Rounded.Apps,
-            contentDescription = stringResource(R.string.dock_open_drawer),
-            tint = Kome,
-            modifier = Modifier.size(26.dp),
-        )
+        LauncherGridGlyph()
+    }
+}
+
+/** Apple固有アセットを使わず、App Libraryを連想できる3x3グリッドを自前描画する。 */
+@Composable
+private fun LauncherGridGlyph() {
+    Canvas(Modifier.size(27.dp)) {
+        val tile = size.minDimension * 0.20f
+        val gap = size.minDimension * 0.105f
+        val contentSize = tile * 3f + gap * 2f
+        val startX = (size.width - contentSize) / 2f
+        val startY = (size.height - contentSize) / 2f
+        for (row in 0..2) {
+            for (column in 0..2) {
+                drawRoundRect(
+                    color = Kome.copy(alpha = if (row == 1 && column == 1) 1f else 0.9f),
+                    topLeft = Offset(
+                        x = startX + column * (tile + gap),
+                        y = startY + row * (tile + gap),
+                    ),
+                    size = Size(tile, tile),
+                    cornerRadius = CornerRadius(tile * 0.28f, tile * 0.28f),
+                )
+            }
+        }
     }
 }

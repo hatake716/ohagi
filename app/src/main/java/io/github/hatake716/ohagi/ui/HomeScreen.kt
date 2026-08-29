@@ -1,25 +1,28 @@
 package io.github.hatake716.ohagi.ui
 
 import android.app.Activity
+import android.appwidget.AppWidgetProviderInfo
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Delete
@@ -34,7 +37,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,48 +48,60 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
+import io.github.hatake716.ohagi.data.AppInfo
+import io.github.hatake716.ohagi.data.AppMoveSource
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
+import io.github.hatake716.ohagi.data.FolderLocation
 import io.github.hatake716.ohagi.data.HomeItem
-import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.data.folderAt
+import io.github.hatake716.ohagi.data.homeGlobalIndex
+import io.github.hatake716.ohagi.data.homePage
+import io.github.hatake716.ohagi.data.homePageCount
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
+import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
 import io.github.hatake716.ohagi.ui.dock.DockBar
-import io.github.hatake716.ohagi.ui.dock.FolderSheet
-import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
-import io.github.hatake716.ohagi.ui.dragdrop.DropTarget
-import io.github.hatake716.ohagi.ui.dragdrop.rememberDragController
+import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
+import io.github.hatake716.ohagi.ui.dragdrop.isOhagiRemovableDrag
+import io.github.hatake716.ohagi.ui.dragdrop.isRemovable
+import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
+import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
 import io.github.hatake716.ohagi.ui.drawer.AppDrawer
+import io.github.hatake716.ohagi.ui.folder.IosFolderOverlay
 import io.github.hatake716.ohagi.ui.home.HomeGrid
+import io.github.hatake716.ohagi.ui.widget.WidgetPage
+import io.github.hatake716.ohagi.ui.widget.WidgetPickerSheet
 import io.github.hatake716.ohagi.util.LaunchUtils
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** いま画面に重なっている UI(同時に 1 つだけ) */
 private sealed interface Overlay {
     data object None : Overlay
-    data object Drawer : Overlay
-    data class FolderView(val slot: Int) : Overlay
-    data class RenameFolder(val slot: Int) : Overlay
+    data object WidgetPicker : Overlay
+    data class FolderView(val location: FolderLocation) : Overlay
+    data class RenameFolder(val location: FolderLocation) : Overlay
     data class SlotMenu(val slot: Int) : Overlay
     data class DockSlotChooser(val app: AppRef) : Overlay
-    /** ホームグリッドのセル長押しメニュー(index のセル) */
+    /** ホームグリッドのセル右側「その他」メニュー(index のセル) */
     data class HomeItemMenu(val index: Int) : Overlay
     data class Picker(val target: PickTarget) : Overlay
 }
@@ -95,7 +109,8 @@ private sealed interface Overlay {
 /** アプリピッカーで選んだアプリの追加先 */
 private sealed interface PickTarget {
     data class DockSlot(val slot: Int) : PickTarget
-    data class FolderAdd(val slot: Int) : PickTarget
+    data class FolderAdd(val location: FolderLocation) : PickTarget
+    data class FolderCreate(val location: FolderLocation) : PickTarget
     /** 分割で開く 1 つ目を選ぶ(選ぶと [SplitSecond] に進む)。 */
     data object SplitFirst : PickTarget
     /** 分割で開く 2 つ目を選ぶ(1 つ目は [first])。 */
@@ -103,59 +118,44 @@ private sealed interface PickTarget {
 }
 
 @Composable
-fun HomeScreen(homeEvents: Flow<Unit>) {
+fun HomeScreen(
+    homeEvents: Flow<Unit>,
+    onRequestWidget: (AppWidgetProviderInfo) -> Unit,
+) {
     val graph = LocalGraph.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
 
     val layout by graph.layoutRepository.state.collectAsStateWithLifecycle()
     val apps by graph.appRepository.apps.collectAsStateWithLifecycle()
+    val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
 
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
+    val pagerState = rememberPagerState(
+        initialPage = PRIMARY_HOME_PAGER_INDEX,
+        pageCount = { layout.homePageCount + STATIC_PAGE_COUNT },
+    )
+    val appLibraryPage = layout.homePageCount + 1
 
-    // ---- ドックの賢い自動非表示 ----
-    // アプリをまだ一度も開いていないセッション初期は常時表示。
-    // アプリを開いたら隠し、下端エッジ上スワイプ or HOME 再押下で再表示する。
-    var hasLaunchedApp by remember { mutableStateOf(false) }
-    var dockVisible by remember { mutableStateOf(true) }
-
-    // ohagi が前面に戻ったら(ON_RESUME): アプリを開いた実績があればドックは隠したまま、
-    // まだなら常時表示。
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                dockVisible = !hasLaunchedApp
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // HOME 再押下: オーバーレイを閉じ、隠れているドックを呼び戻す(ホームに戻ってきた合図)。
+    // HOME再押下ではオーバーレイを閉じ、必ず1枚目のホームへ戻る。
     LaunchedEffect(Unit) {
         homeEvents.collect {
             overlay = Overlay.None
-            dockVisible = true
+            pagerState.scrollToPage(PRIMARY_HOME_PAGER_INDEX)
         }
     }
 
-    // ホーム画面ではバックキーを無効化(ランチャーの標準挙動)
-    BackHandler(enabled = overlay == Overlay.None) { }
-    BackHandler(enabled = overlay != Overlay.None) { overlay = Overlay.None }
-
-    /** アプリを開いたことを記録し、ドックを隠す。 */
-    fun onAppLaunched() {
-        hasLaunchedApp = true
-        dockVisible = false
+    BackHandler(enabled = overlay == Overlay.None && pagerState.currentPage != PRIMARY_HOME_PAGER_INDEX) {
+        scope.launch { pagerState.animateScrollToPage(PRIMARY_HOME_PAGER_INDEX) }
     }
+    // 1枚目のホームではバックキーを無効化(ランチャーの標準挙動)
+    BackHandler(enabled = overlay == Overlay.None && pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX) { }
+    BackHandler(enabled = overlay != Overlay.None) { overlay = Overlay.None }
 
     /** 単体でフルスクリーン起動する。 */
     fun openApp(app: AppRef) {
         overlay = Overlay.None
         LaunchUtils.launch(context, app)
-        onAppLaunched()
     }
 
     /**
@@ -168,338 +168,767 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
     fun openSplit(first: AppRef, second: AppRef) {
         overlay = Overlay.None
         scope.launch { LaunchUtils.launchSplit(context, first, second) }
-        onAppLaunched()
     }
 
-    // ---- 横断ドラッグ&ドロップ ----
-    val drag = rememberDragController()
-    var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    // ---- 公式 Compose Drag and Drop ----
+    var activeDrag by remember { mutableStateOf<DragPayload?>(null) }
+    var trashHovered by remember { mutableStateOf(false) }
+    var trashBounds by remember { mutableStateOf<Rect?>(null) }
+    var rootBounds by remember { mutableStateOf<Rect?>(null) }
+    var edgeTransitionInProgress by remember { mutableStateOf(false) }
+    var edgeDestinationHomePage by remember { mutableStateOf<Int?>(null) }
+    var requestedHomePageCount by remember { mutableStateOf<Int?>(null) }
+    var createdPageDuringDrag by remember { mutableStateOf(false) }
+    var edgeDropCommitted by remember { mutableStateOf(false) }
+    var pageLimitToastShown by remember { mutableStateOf(false) }
+    val repo = graph.layoutRepository
+    val defaultFolderName = stringResource(R.string.dock_folder_default_name)
+    val edgeZonePx = with(LocalDensity.current) { HOME_PAGE_EDGE_ZONE.toPx() }
 
-    /** ドラッグ確定: origin×target で入替/移動/設置を振り分ける。 */
-    fun commitDrop() {
-        val origin = drag.origin
-        val target = drag.resolveDrop()
-        val repo = graph.layoutRepository
-        if (origin != null && target != null) {
-            when {
-                // 削除エリアへドロップ: 元の場所から取り除く(ドロワー発は元々未配置なので no-op)
-                target is DropTarget.Trash && origin is DragOrigin.Home ->
-                    repo.setHomeItem(origin.index, null)
-                target is DropTarget.Trash && origin is DragOrigin.Dock ->
-                    repo.setDockItem(origin.slot, null)
-                origin is DragOrigin.Home && target is DropTarget.HomeCell ->
-                    repo.swapHomeItems(origin.index, target.index)
-                origin is DragOrigin.Dock && target is DropTarget.DockSlot ->
-                    repo.swapDockItems(origin.slot, target.slot)
-                origin is DragOrigin.Home && target is DropTarget.DockSlot ->
-                    repo.moveHomeToDock(origin.index, target.slot)
-                origin is DragOrigin.Dock && target is DropTarget.HomeCell ->
-                    repo.moveDockToHome(origin.slot, target.index)
-                origin is DragOrigin.Drawer && target is DropTarget.HomeCell ->
-                    drag.draggingApp?.let { repo.placeAppOnHome(target.index, it) }
-                origin is DragOrigin.Drawer && target is DropTarget.DockSlot ->
-                    drag.draggingApp?.let { repo.placeAppOnDock(target.slot, it) }
+    LaunchedEffect(layout.homePageCount, requestedHomePageCount) {
+        val expected = requestedHomePageCount ?: return@LaunchedEffect
+        if (layout.homePageCount >= expected) {
+            // pager上ではホームページ番号とindexが一致する（0はWidgetページ）。
+            pagerState.scrollToPage(layout.homePageCount)
+            requestedHomePageCount = null
+            edgeDestinationHomePage = null
+            edgeDropCommitted = false
+            delay(HOME_PAGE_EDGE_COOLDOWN_MS)
+            edgeTransitionInProgress = false
+        }
+    }
+
+    LaunchedEffect(activeDrag) {
+        if (activeDrag == null) {
+            edgeTransitionInProgress = false
+            if (!edgeDropCommitted) {
+                edgeDestinationHomePage = null
+                requestedHomePageCount = null
+            }
+            pageLimitToastShown = false
+        }
+    }
+
+    fun appMoveSource(payload: DragPayload): AppMoveSource? = when (payload) {
+        is DragPayload.FromDrawer -> AppMoveSource.External(payload.app)
+        is DragPayload.FromHome ->
+            if (layout.home.getOrNull(payload.index) is HomeItem.HomeApp) {
+                AppMoveSource.Home(payload.index)
+            } else null
+        is DragPayload.FromDock ->
+            if (layout.dock.getOrNull(payload.slot) is DockItem.DockApp) {
+                AppMoveSource.Dock(payload.slot)
+            } else null
+        is DragPayload.FromHomeFolder ->
+            AppMoveSource.HomeFolder(payload.index, payload.appIndex, payload.app)
+        is DragPayload.FromDockFolder ->
+            AppMoveSource.DockFolder(payload.slot, payload.appIndex, payload.app)
+    }
+
+    fun draggedApp(payload: DragPayload): AppRef? = when (payload) {
+        is DragPayload.FromDrawer -> payload.app
+        is DragPayload.FromHome ->
+            (layout.home.getOrNull(payload.index) as? HomeItem.HomeApp)?.app
+        is DragPayload.FromDock ->
+            (layout.dock.getOrNull(payload.slot) as? DockItem.DockApp)?.app
+        is DragPayload.FromHomeFolder -> payload.app
+        is DragPayload.FromDockFolder -> payload.app
+    }
+
+    fun suggestedFolderName(refs: List<AppRef>): String {
+        val categories = refs
+            .mapNotNull { ref -> apps.firstOrNull { it.ref == ref }?.category }
+            .distinct()
+        return if (categories.size == 1) {
+            context.getString(appCategoryTitleRes(categories.single()))
+        } else {
+            defaultFolderName
+        }
+    }
+
+    fun canStackOnHome(index: Int, payload: DragPayload): Boolean {
+        val target = layout.home.getOrNull(index) ?: return false
+        val sourceApp = draggedApp(payload) ?: return false
+        if (payload is DragPayload.FromHome && payload.index == index) return false
+        if (payload is DragPayload.FromHomeFolder && payload.index == index) return false
+        return when (target) {
+            is HomeItem.HomeApp -> target.app != sourceApp
+            is HomeItem.HomeFolder -> true
+        }
+    }
+
+    fun canStackOnDock(slot: Int, payload: DragPayload): Boolean {
+        val target = layout.dock.getOrNull(slot) ?: return false
+        val sourceApp = draggedApp(payload) ?: return false
+        if (payload is DragPayload.FromDock && payload.slot == slot) return false
+        if (payload is DragPayload.FromDockFolder && payload.slot == slot) return false
+        return when (target) {
+            is DockItem.DockApp -> target.app != sourceApp
+            is DockItem.DockFolder -> true
+        }
+    }
+
+    fun folderNameForHome(index: Int, payload: DragPayload): String {
+        val target = layout.home.getOrNull(index)
+        if (target is HomeItem.HomeFolder) return target.name
+        val refs = buildList {
+            (target as? HomeItem.HomeApp)?.app?.let(::add)
+            draggedApp(payload)?.let(::add)
+        }
+        return suggestedFolderName(refs)
+    }
+
+    fun folderNameForDock(slot: Int, payload: DragPayload): String {
+        val target = layout.dock.getOrNull(slot)
+        if (target is DockItem.DockFolder) return target.name
+        val refs = buildList {
+            (target as? DockItem.DockApp)?.app?.let(::add)
+            draggedApp(payload)?.let(::add)
+        }
+        return suggestedFolderName(refs)
+    }
+
+    /**
+     * ターゲット自身がセルindexを持つ。アイコン中央へのドロップだけをフォルダ化とし、
+     * セル外周へのドロップは従来どおり移動／入れ替えに使う。
+     */
+    fun dropOnHome(
+        index: Int,
+        payload: DragPayload,
+        stackIntent: Boolean,
+    ): Boolean {
+        val source = appMoveSource(payload)
+        val targetIsFolder = layout.home.getOrNull(index) is HomeItem.HomeFolder
+        if (source != null) {
+            if ((stackIntent || targetIsFolder) && canStackOnHome(index, payload)) {
+                repo.stackAppOnHome(index, source, folderNameForHome(index, payload))
+            } else {
+                repo.moveAppToHome(index, source)
+            }
+            return true
+        }
+        return when (payload) {
+            is DragPayload.FromHome -> {
+                if (layout.home.getOrNull(payload.index) == null) false
+                else {
+                    repo.swapHomeItems(payload.index, index)
+                    true
+                }
+            }
+            is DragPayload.FromDock -> {
+                if (layout.dock.getOrNull(payload.slot) == null) false
+                else {
+                    repo.moveDockToHome(payload.slot, index)
+                    true
+                }
+            }
+            else -> false
+        }
+    }
+
+    fun dropOnDock(
+        slot: Int,
+        payload: DragPayload,
+        stackIntent: Boolean,
+    ): Boolean {
+        val source = appMoveSource(payload)
+        val targetIsFolder = layout.dock.getOrNull(slot) is DockItem.DockFolder
+        if (source != null) {
+            if ((stackIntent || targetIsFolder) && canStackOnDock(slot, payload)) {
+                repo.stackAppOnDock(slot, source, folderNameForDock(slot, payload))
+            } else {
+                repo.moveAppToDock(slot, source)
+            }
+            return true
+        }
+        return when (payload) {
+            is DragPayload.FromDock -> {
+                if (layout.dock.getOrNull(payload.slot) == null) false
+                else {
+                    repo.swapDockItems(payload.slot, slot)
+                    true
+                }
+            }
+            is DragPayload.FromHome -> {
+                if (layout.home.getOrNull(payload.index) == null) false
+                else {
+                    repo.moveHomeToDock(payload.index, slot)
+                    true
+                }
+            }
+            else -> false
+        }
+    }
+
+    fun dropOnTrash(payload: DragPayload): Boolean = when (payload) {
+        is DragPayload.FromHome -> {
+            if (layout.home.getOrNull(payload.index) == null) false
+            else {
+                repo.setHomeItem(payload.index, null)
+                true
             }
         }
-        // ドロワー発ドラッグはドロワーを開いたままなので、確定時に閉じる。
-        if (origin is DragOrigin.Drawer) overlay = Overlay.None
-        drag.reset()
+        is DragPayload.FromDock -> {
+            if (layout.dock.getOrNull(payload.slot) == null) false
+            else {
+                repo.setDockItem(payload.slot, null)
+                true
+            }
+        }
+        is DragPayload.FromHomeFolder -> {
+            val folder = layout.home.getOrNull(payload.index) as? HomeItem.HomeFolder
+            if (folder?.apps?.contains(payload.app) != true) false
+            else {
+                repo.removeAppFromFolder(FolderLocation.Home(payload.index), payload.app)
+                true
+            }
+        }
+        is DragPayload.FromDockFolder -> {
+            val folder = layout.dock.getOrNull(payload.slot) as? DockItem.DockFolder
+            if (folder?.apps?.contains(payload.app) != true) false
+            else {
+                repo.removeAppFromFolder(FolderLocation.Dock(payload.slot), payload.app)
+                true
+            }
+        }
+        is DragPayload.FromDrawer -> false
     }
+
+    fun isTrashDrop(payload: DragPayload, position: Offset): Boolean =
+        payload.isRemovable() && trashBounds?.contains(position) == true
+
+    fun dropOnDestinationHomePage(
+        destinationPage: Int,
+        payload: DragPayload,
+    ): Boolean {
+        appMoveSource(payload)?.let { source ->
+            repo.moveAppToHomePage(destinationPage, source)
+            edgeDropCommitted = requestedHomePageCount != null
+            return true
+        }
+        val accepted = when (payload) {
+            is DragPayload.FromHome -> {
+                if (layout.home.getOrNull(payload.index) == null) false
+                else {
+                    repo.moveHomeItemToHomePage(destinationPage, payload.index)
+                    true
+                }
+            }
+
+            is DragPayload.FromDock -> {
+                if (layout.dock.getOrNull(payload.slot) == null) false
+                else {
+                    repo.moveDockItemToHomePage(destinationPage, payload.slot)
+                    true
+                }
+            }
+
+            else -> false
+        }
+        if (accepted) edgeDropCommitted = requestedHomePageCount != null
+        return accepted
+    }
+
+    // Composeは重なる兄弟targetのうちホームセルを先に選ぶ場合があるため、
+    // 受け取った公式DragEventのルート位置がpill内なら削除処理へ委譲する。
+    fun routeDropOnHome(
+        index: Int,
+        payload: DragPayload,
+        position: Offset,
+        stackIntent: Boolean,
+    ): Boolean {
+        val destinationPage = edgeDestinationHomePage
+        return if (createdPageDuringDrag && destinationPage != null) {
+            dropOnDestinationHomePage(destinationPage, payload)
+        } else if (isTrashDrop(payload, position)) dropOnTrash(payload)
+        else dropOnHome(index, payload, stackIntent)
+    }
+
+    fun routeDropOnDock(
+        slot: Int,
+        payload: DragPayload,
+        position: Offset,
+        stackIntent: Boolean,
+    ): Boolean {
+        val destinationPage = edgeDestinationHomePage
+        return if (createdPageDuringDrag && destinationPage != null) {
+            dropOnDestinationHomePage(destinationPage, payload)
+        } else if (isTrashDrop(payload, position)) dropOnTrash(payload)
+        else dropOnDock(slot, payload, stackIntent)
+    }
+
+    fun updateDragPosition(position: Offset) {
+        val payload = activeDrag
+        trashHovered = payload != null && isTrashDrop(payload, position)
+        if (payload == null || trashHovered || edgeTransitionInProgress) return
+        val bounds = rootBounds ?: return
+        val currentPage = pagerState.currentPage
+        if (currentPage !in 1..layout.homePageCount) return
+        val atRightEdge = position.x >= bounds.right - edgeZonePx
+        if (createdPageDuringDrag && !atRightEdge) {
+            createdPageDuringDrag = false
+            edgeDestinationHomePage = null
+            requestedHomePageCount = null
+        }
+
+        when {
+            atRightEdge -> {
+                edgeTransitionInProgress = true
+                when {
+                    currentPage < layout.homePageCount -> scope.launch {
+                        edgeDestinationHomePage = currentPage
+                        pagerState.scrollToPage(currentPage + 1)
+                        delay(HOME_PAGE_EDGE_COOLDOWN_MS)
+                        edgeTransitionInProgress = false
+                    }
+
+                    createdPageDuringDrag -> {
+                        // 1回のドラッグで新規作成するページは1枚だけにする。
+                        edgeTransitionInProgress = false
+                    }
+
+                    layout.homePageCount < io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT -> {
+                        createdPageDuringDrag = true
+                        edgeDestinationHomePage = layout.homePageCount
+                        requestedHomePageCount = layout.homePageCount + 1
+                        // OSのDROPまでは現在のセルtargetを維持し、DROP内で生成と移動を原子的に行う。
+                        edgeTransitionInProgress = false
+                    }
+
+                    else -> {
+                        edgeTransitionInProgress = false
+                        if (!pageLimitToastShown) {
+                            pageLimitToastShown = true
+                            Toast.makeText(
+                                context,
+                                context.getString(
+                                    R.string.toast_home_pages_full,
+                                    io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT,
+                                ),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                }
+            }
+
+            position.x <= bounds.left + edgeZonePx && currentPage > PRIMARY_HOME_PAGER_INDEX -> {
+                edgeTransitionInProgress = true
+                edgeDestinationHomePage = currentPage - 2
+                scope.launch {
+                    // D&D中はウィジェットページへは入らず、ホームページ間だけを移動する。
+                    pagerState.scrollToPage(currentPage - 1)
+                    delay(HOME_PAGE_EDGE_COOLDOWN_MS)
+                    edgeTransitionInProgress = false
+                }
+            }
+        }
+    }
+
+    /**
+     * ページ追加／切替で元のセルtargetが破棄された場合のフォールバック。
+     * 目的ページの先頭空きセルへ移し、ページ生成も同じDataStore更新内で保証する。
+     */
+    fun dropOnPagerFallback(payload: DragPayload, position: Offset): Boolean {
+        if (isTrashDrop(payload, position)) return dropOnTrash(payload)
+        val visibleHomePage = (pagerState.currentPage - 1)
+            .coerceIn(0, layout.homePageCount - 1)
+        val destinationPage = edgeDestinationHomePage ?: visibleHomePage
+        if (destinationPage !in 0 until io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT) {
+            return false
+        }
+
+        return dropOnDestinationHomePage(destinationPage, payload)
+    }
+
+    fun endDragSession() {
+        trashHovered = false
+        activeDrag = null
+        if (createdPageDuringDrag) {
+            createdPageDuringDrag = false
+            val pageCountBeforeCleanup = maxOf(
+                layout.homePageCount,
+                (edgeDestinationHomePage ?: -1) + 1,
+            )
+            scope.launch {
+                // onDropのDataStore更新を先に完了させ、空のままの追加ページだけを除去する。
+                delay(700)
+                repo.trimTrailingEmptyHomePages()
+                delay(700)
+                val remainingPages = repo.state.value.homePageCount
+                if (remainingPages < pageCountBeforeCleanup && pagerState.currentPage > remainingPages) {
+                    pagerState.scrollToPage(remainingPages)
+                }
+            }
+        }
+    }
+
+    // HomeGridの各セルがPager再構成で入れ替わっても、この親targetはセッション中存続する。
+    val pagerFallbackTarget = rememberOhagiDropTarget(
+        onStarted = { activeDrag = it },
+        onMoved = ::updateDragPosition,
+        onEnded = ::endDragSession,
+        onDrop = ::dropOnPagerFallback,
+    )
+
+    val trashTarget = rememberOhagiDropTarget(
+        onStarted = { activeDrag = it },
+        onEntered = { trashHovered = true },
+        onMoved = { position ->
+            trashHovered = activeDrag?.let { isTrashDrop(it, position) } == true
+        },
+        onExited = { trashHovered = false },
+        onEnded = ::endDragSession,
+        onDrop = { payload, _ ->
+            trashHovered = false
+            dropOnTrash(payload)
+        },
+    )
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .onGloballyPositioned { rootCoords = it },
+            .onGloballyPositioned { rootBounds = it.boundsInRoot() }
+            .ohagiDropTarget(pagerFallbackTarget),
     ) {
-        // 背面ジェスチャ層: 主画面は壁紙のみ(ミニマル)。
-        // 画面下端付近からの上スワイプ → 隠れたドックを一時表示する。
-        // (ドロワーは中央ランチャーボタンからのみ開く。上スワイプでのドロワー起動は廃止)
+        // DragAndDropNodeはレイアウトツリーの先頭から候補を探索するため、ホームと重なる
+        // 削除領域を先にcomposeする。zIndexで描画も最前面に保つ。
+        // 常時composeしてACTION_DRAG_STARTEDを受け取り、通常時だけ透明化する。
+        val showTrash = activeDrag?.isRemovable() == true
+        val trashVisibility by animateFloatAsState(
+            targetValue = if (showTrash) 1f else 0f,
+            animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+            label = "trashVisibility",
+        )
+        val trashColor by animateColorAsState(
+            targetValue = if (trashHovered) Color(0xE6D32F2F) else Color(0xB31C1C1E),
+            animationSpec = tween(durationMillis = 120),
+            label = "trashColor",
+        )
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    val edgeThresholdPx = with(density) { 120.dp.toPx() }
-                    val smallSwipePx = with(density) { 40.dp.toPx() }
-                    var dragged = 0f
-                    var fromBottomEdge = false
-                    detectVerticalDragGestures(
-                        onDragStart = { offset ->
-                            dragged = 0f
-                            fromBottomEdge = offset.y > size.height - edgeThresholdPx
+                .align(Alignment.TopCenter)
+                .zIndex(10f)
+                .onGloballyPositioned { trashBounds = it.boundsInRoot() }
+                .statusBarsPadding()
+                .padding(top = 12.dp)
+                .graphicsLayer {
+                    alpha = trashVisibility
+                    val scale = 0.92f + trashVisibility * 0.08f
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .clip(RoundedCornerShape(24.dp))
+                .background(trashColor)
+                .ohagiDropTarget(
+                    target = trashTarget,
+                    accept = { event -> event.isOhagiRemovableDrag() },
+                )
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+        ) {
+            androidx.compose.foundation.layout.Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Rounded.Delete,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.action_remove),
+                    color = Color.White,
+                )
+            }
+        }
+
+        // DragAndDropNodeは同じComposeView内で先に登録された候補を優先する。
+        // フォルダをホーム／Dockより先にcomposeし、背面セルがフォルダ内D&Dを
+        // 奪わないようにする。描画順はzIndexで前面、削除領域より下に保つ。
+        (overlay as? Overlay.FolderView)?.let { current ->
+            val folder = layout.folderAt(current.location)
+            if (folder == null) {
+                LaunchedEffect(current) {
+                    kotlinx.coroutines.delay(500)
+                    if (overlay == current && layout.folderAt(current.location) == null) {
+                        overlay = Overlay.None
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(9f),
+                ) {
+                    IosFolderOverlay(
+                        location = current.location,
+                        folderName = folder.name,
+                        apps = folder.apps,
+                        labelOf = appLabelOf,
+                        activeDrag = activeDrag,
+                        onLaunch = ::openApp,
+                        onAddApps = {
+                            overlay = Overlay.Picker(PickTarget.FolderAdd(current.location))
                         },
-                        onVerticalDrag = { _, dragAmount -> dragged += dragAmount },
-                        onDragEnd = {
-                            // 下端からの上スワイプ → ドックを一時表示
-                            if (fromBottomEdge && dragged < -smallSwipePx && overlay == Overlay.None) {
-                                dockVisible = true
+                        onRemoveApp = { app ->
+                            val removingLastApp = folder.apps.size == 1 && folder.apps.single() == app
+                            repo.removeAppFromFolder(current.location, app)
+                            if (removingLastApp && overlay == current) {
+                                overlay = Overlay.None
                             }
+                        },
+                        onRename = {
+                            overlay = Overlay.RenameFolder(current.location)
+                        },
+                        onReorder = { from, to ->
+                            repo.reorderFolderApps(current.location, from, to)
+                        },
+                        onDragMoved = ::updateDragPosition,
+                        onDragStarted = { activeDrag = it },
+                        onDragEnded = ::endDragSession,
+                        onDragOutside = {
+                            if (overlay == current) overlay = Overlay.None
+                        },
+                        onDismiss = {
+                            if (overlay == current) overlay = Overlay.None
                         },
                     )
                 }
-        )
+            }
+        }
 
-        // ホーム主画面のアイコングリッド(壁紙の上)。
-        HomeGrid(
-            home = layout.home,
-            drag = drag,
-            rootCoords = { rootCoords },
-            onCellTap = { index ->
-                // 空きセルタップは無反応(アプリ設置は D&D のみ)。
-                when (val item = layout.home.getOrNull(index)) {
-                    is HomeItem.HomeApp -> openApp(item.app)
-                    else -> Unit
+        HorizontalPager(
+            state = pagerState,
+            userScrollEnabled = activeDrag == null && overlay == Overlay.None,
+            key = { page ->
+                when {
+                    page == WIDGET_PAGER_INDEX -> "widgets"
+                    page in 1..layout.homePageCount -> "home-${page - 1}"
+                    else -> "app-library"
                 }
             },
-            onCellLongPressNoMove = { index ->
-                // アプリセルは長押しでメニュー。空きセルは無反応。
-                if (layout.home.getOrNull(index) is HomeItem.HomeApp) {
-                    overlay = Overlay.HomeItemMenu(index)
-                }
-            },
-            onDrop = { commitDrop() },
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .padding(bottom = HOME_GRID_BOTTOM_RESERVED),
-        )
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            when {
+                page == WIDGET_PAGER_INDEX -> WidgetPage(
+                    widgets = layout.widgets,
+                    onAddWidget = { overlay = Overlay.WidgetPicker },
+                    onRemoveWidget = { placement ->
+                        graph.widgetHost.deleteAppWidgetId(placement.appWidgetId)
+                        repo.removeWidget(placement.appWidgetId)
+                    },
+                    onMoveWidget = { placement, direction ->
+                        repo.reorderWidget(placement.appWidgetId, direction)
+                    },
+                )
 
-        // ドック(自動非表示・iOS風スプリング)。BottomCenter にオーバーレイ配置。
-        // ドラッグ中は隠さない(ドロップ先として見せ続ける)。
+                page in 1..layout.homePageCount -> {
+                    val homePage = page - 1
+                    HomeGrid(
+                        home = layout.homePage(homePage),
+                        indexOffset = homeGlobalIndex(homePage, 0),
+                        activeDrag = activeDrag,
+                        labelOf = appLabelOf,
+                        onCellTap = { index ->
+                            when (val item = layout.home.getOrNull(index)) {
+                                is HomeItem.HomeApp -> openApp(item.app)
+                                is HomeItem.HomeFolder ->
+                                    overlay = Overlay.FolderView(FolderLocation.Home(index))
+                                else -> Unit
+                            }
+                        },
+                        onCellMenu = { index ->
+                            if (layout.home.getOrNull(index) != null) {
+                                overlay = Overlay.HomeItemMenu(index)
+                            }
+                        },
+                        onDrop = ::routeDropOnHome,
+                        canStack = ::canStackOnHome,
+                        onDragMoved = ::updateDragPosition,
+                        onDragSessionStarted = { activeDrag = it },
+                        onDragSessionEnded = ::endDragSession,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .padding(bottom = HOME_GRID_BOTTOM_RESERVED),
+                    )
+                }
+
+                page == appLibraryPage -> AppDrawer(
+                    apps = apps,
+                    onLaunch = { app -> openApp(app.ref) },
+                    onAddToWorkspace = { app ->
+                        overlay = Overlay.Picker(PickTarget.SplitSecond(app.ref))
+                    },
+                    onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
+                    onAppInfo = { app ->
+                        overlay = Overlay.None
+                        LaunchUtils.openAppInfo(context, app.ref.packageName)
+                    },
+                    onUninstall = { app ->
+                        overlay = Overlay.None
+                        LaunchUtils.requestUninstall(context, app.ref.packageName)
+                    },
+                    onOpenDefaultHome = {
+                        (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
+                    },
+                    onDragStarted = { payload ->
+                        activeDrag = payload
+                        // OSのD&Dセッションを保ったまま、最後のホームページを露出する。
+                        scope.launch { pagerState.scrollToPage(layout.homePageCount) }
+                    },
+                    onDismiss = {
+                        scope.launch { pagerState.animateScrollToPage(PRIMARY_HOME_PAGER_INDEX) }
+                    },
+                )
+            }
+        }
+
+        if (layout.homePageCount > 1 && pagerState.currentPage in 1..layout.homePageCount) {
+            HomePageIndicator(
+                pageCount = layout.homePageCount,
+                selectedPage = pagerState.currentPage - 1,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = HOME_PAGE_INDICATOR_BOTTOM),
+            )
+        }
+
+        // Dockはホームページだけに表示し、WidgetページとAppライブラリでは隠す。
         AnimatedVisibility(
-            visible = dockVisible || drag.isDragging,
-            enter = slideInVertically(
-                animationSpec = spring(
-                    dampingRatio = 0.8f,
-                    stiffness = Spring.StiffnessMedium,
-                ),
-            ) { it } + fadeIn(),
-            exit = slideOutVertically(
-                animationSpec = spring(
-                    dampingRatio = 0.9f,
-                    stiffness = Spring.StiffnessMedium,
-                ),
-            ) { it } + fadeOut(),
+            visible = pagerState.currentPage in 1..layout.homePageCount,
+            enter = fadeIn(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(120)),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             DockBar(
                 dock = layout.dock,
-                drag = drag,
-                rootCoords = { rootCoords },
+                activeDrag = activeDrag,
+                labelOf = appLabelOf,
                 onSlotTap = { slot ->
-                    // 空きスロットタップは無反応(アプリ設置は D&D のみ)。
                     when (val item = layout.dock.getOrNull(slot)) {
                         is DockItem.DockApp -> openApp(item.app)
-                        is DockItem.DockFolder -> overlay = Overlay.FolderView(slot)
+                        is DockItem.DockFolder ->
+                            overlay = Overlay.FolderView(FolderLocation.Dock(slot))
                         null -> Unit
                     }
                 },
-                onSlotLongPressNoMove = { slot -> overlay = Overlay.SlotMenu(slot) },
-                onLauncherTap = { overlay = Overlay.Drawer },
-                // 中央ボタン長押し = 分割画面の設定(1 つ目 → 2 つ目を選ぶ)のみ
+                onSlotMenu = { slot -> overlay = Overlay.SlotMenu(slot) },
+                onLauncherTap = {
+                    scope.launch { pagerState.animateScrollToPage(appLibraryPage) }
+                },
                 onLauncherLongPress = { overlay = Overlay.Picker(PickTarget.SplitFirst) },
-                onDrop = { commitDrop() },
+                onDrop = ::routeDropOnDock,
+                canStack = ::canStackOnDock,
+                onDragMoved = ::updateDragPosition,
+                onDragSessionStarted = { payload ->
+                    activeDrag = payload
+                    if (pagerState.currentPage == appLibraryPage) {
+                        scope.launch { pagerState.scrollToPage(layout.homePageCount) }
+                    }
+                },
+                onDragSessionEnded = ::endDragSession,
                 modifier = Modifier
                     .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             )
         }
 
-        // ドロワー表示中(開閉アニメーション含む)は背面へのタッチを遮断する。
-        // 【重要な不変条件】この遮断 Box は必ず下の AppDrawer より前(z 下層)に宣言すること。
-        // AppDrawer より後(上)に置くと、hit-test が最前面のこの Box を先に掴み、
-        // DrawerCell の長押しドラッグ開始を奪ってドロワー発 D&D が壊れる。
-        if (overlay == Overlay.Drawer) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitPointerEvent().changes.forEach { it.consume() }
-                            }
-                        }
-                    }
-            )
-        }
-
-        // ドロワー: 下からの弾性スプリングでせり上がり + スケールイン + フェード(iPhone風)
-        AnimatedVisibility(
-            visible = overlay == Overlay.Drawer,
-            enter = slideInVertically(
-                animationSpec = spring(
-                    dampingRatio = 0.78f,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-            ) { it } + scaleIn(
-                initialScale = 0.92f,
-                animationSpec = spring(
-                    dampingRatio = 0.8f,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-            ) + fadeIn(),
-            exit = slideOutVertically(
-                animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMedium),
-            ) { it } + scaleOut(targetScale = 0.92f) + fadeOut(),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            AppDrawer(
-                apps = apps,
-                drag = drag,
-                rootCoords = { rootCoords },
-                onLaunch = { app -> openApp(app.ref) },
-                onAddToWorkspace = { app ->
-                    // 「分割で開く」: このアプリを 1 つ目にして、2 つ目の相方を選ばせる。
-                    overlay = Overlay.Picker(PickTarget.SplitSecond(app.ref))
-                },
-                onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
-                onAppInfo = { app ->
-                    overlay = Overlay.None
-                    LaunchUtils.openAppInfo(context, app.ref.packageName)
-                },
-                onUninstall = { app ->
-                    overlay = Overlay.None
-                    LaunchUtils.requestUninstall(context, app.ref.packageName)
-                },
-                onOpenDefaultHome = {
-                    (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
-                },
-                // ドラッグ確定: commitDrop が設置/削除し、ドロワーを閉じる。
-                onDrop = { commitDrop() },
-                onDismiss = { overlay = Overlay.None },
-            )
-        }
-
-        // 削除エリア(ドラッグ中のみ・画面上部)。ドラッグ中のアイコンをここへ落とすと削除。
-        // 指の移動/ドロップは各領域(ホーム/ドック/ドロワー)のジェスチャが担うため、
-        // このエリアと浮遊アイコン層は pointerInput を持たず、描画と矩形報告のみ行う。
-        if (drag.isDragging) {
-            val overTrash = drag.isOverTrash()
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 12.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(
-                        if (overTrash) Color(0xCCD32F2F) else Color(0x66000000)
-                    )
-                    .onGloballyPositioned { coords ->
-                        val root = rootCoords
-                        if (root != null) {
-                            val tl = root.localPositionOf(coords, Offset.Zero)
-                            drag.reportTrash(
-                                androidx.compose.ui.geometry.Rect(
-                                    tl,
-                                    androidx.compose.ui.geometry.Size(
-                                        coords.size.width.toFloat(), coords.size.height.toFloat(),
-                                    ),
-                                )
-                            )
-                        }
-                    }
-                    .padding(horizontal = 24.dp, vertical = 12.dp),
-            ) {
-                androidx.compose.foundation.layout.Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    androidx.compose.material3.Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = null,
-                        tint = Color.White,
-                    )
-                    androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.action_remove),
-                        color = Color.White,
-                    )
-                }
-            }
-
-            // 浮遊アイコン(最前面)。指位置に追従。
-            val di = drag.draggingHomeItem
-            val cellW = with(density) { drag.cellSize.x.toDp() }
-            Box(
-                modifier = Modifier
-                    .width(if (cellW.value > 0f) cellW else 72.dp)
-                    .graphicsLayer {
-                        translationX = drag.fingerPos.x - drag.cellSize.x / 2f
-                        translationY = drag.fingerPos.y - drag.cellSize.y / 2f
-                        alpha = 0.9f
-                        scaleX = 1.1f
-                        scaleY = 1.1f
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                val app = drag.draggingApp
-                if (app != null) {
-                    AppIcon(app = app, size = 56.dp)
-                } else if (di is HomeItem.HomeFolder) {
-                    di.apps.firstOrNull()?.let { AppIcon(app = it, size = 56.dp) }
-                }
-            }
-        }
     }
 
     // ---- シート/ダイアログ類 ----
 
     when (val current = overlay) {
         is Overlay.HomeItemMenu -> {
-            val item = layout.home.getOrNull(current.index) as? HomeItem.HomeApp
-            if (item == null) {
-                overlay = Overlay.None
-            } else {
-                val app = item.app
-                MenuSheet(
-                    entries = listOf(
-                        MenuEntry(stringResource(R.string.action_launch), Icons.Rounded.PlayArrow) {
-                            openApp(app)
-                        },
-                        MenuEntry(stringResource(R.string.menu_split_open), Icons.Rounded.Splitscreen) {
-                            overlay = Overlay.Picker(PickTarget.SplitSecond(app))
-                        },
-                        MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
-                            LaunchUtils.openAppInfo(context, app.packageName)
-                        },
-                        MenuEntry(
-                            stringResource(R.string.action_remove),
-                            Icons.Rounded.Delete,
-                            destructive = true,
-                        ) {
-                            graph.layoutRepository.setHomeItem(current.index, null)
-                        },
-                        MenuEntry(
-                            stringResource(R.string.action_uninstall),
-                            Icons.Rounded.Delete,
-                            destructive = true,
-                        ) {
-                            LaunchUtils.requestUninstall(context, app.packageName)
-                        },
-                    ),
-                    onDismiss = { if (overlay == current) overlay = Overlay.None },
-                )
+            when (val item = layout.home.getOrNull(current.index)) {
+                null -> overlay = Overlay.None
+                is HomeItem.HomeApp -> {
+                    val app = item.app
+                    MenuSheet(
+                        entries = listOf(
+                            MenuEntry(stringResource(R.string.action_launch), Icons.Rounded.PlayArrow) {
+                                openApp(app)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.folder_create_with_apps),
+                                Icons.Rounded.Folder,
+                            ) {
+                                overlay = Overlay.Picker(
+                                    PickTarget.FolderCreate(FolderLocation.Home(current.index)),
+                                )
+                            },
+                            MenuEntry(stringResource(R.string.menu_split_open), Icons.Rounded.Splitscreen) {
+                                overlay = Overlay.Picker(PickTarget.SplitSecond(app))
+                            },
+                            MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
+                                LaunchUtils.openAppInfo(context, app.packageName)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_remove),
+                                Icons.Rounded.Delete,
+                                destructive = true,
+                            ) {
+                                repo.setHomeItem(current.index, null)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_uninstall),
+                                Icons.Rounded.Delete,
+                                destructive = true,
+                            ) {
+                                LaunchUtils.requestUninstall(context, app.packageName)
+                            },
+                        ),
+                        onDismiss = { if (overlay == current) overlay = Overlay.None },
+                    )
+                }
+
+                is HomeItem.HomeFolder -> {
+                    val location = FolderLocation.Home(current.index)
+                    MenuSheet(
+                        entries = listOf(
+                            MenuEntry(item.name, Icons.Rounded.Folder) {
+                                overlay = Overlay.FolderView(location)
+                            },
+                            MenuEntry(stringResource(R.string.folder_add_apps), Icons.Rounded.Add) {
+                                overlay = Overlay.Picker(PickTarget.FolderAdd(location))
+                            },
+                            MenuEntry(stringResource(R.string.action_rename), Icons.Rounded.Edit) {
+                                overlay = Overlay.RenameFolder(location)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_remove),
+                                Icons.Rounded.Delete,
+                                destructive = true,
+                            ) {
+                                repo.setHomeItem(current.index, null)
+                            },
+                        ),
+                        onDismiss = { if (overlay == current) overlay = Overlay.None },
+                    )
+                }
             }
         }
 
         is Overlay.SlotMenu -> {
             val item = layout.dock.getOrNull(current.slot)
-            val defaultFolderName = stringResource(R.string.dock_folder_default_name)
             val entries = when (item) {
                 null -> listOf(
                     MenuEntry(stringResource(R.string.dock_assign_app), Icons.Rounded.Add) {
                         overlay = Overlay.Picker(PickTarget.DockSlot(current.slot))
-                    },
-                    MenuEntry(stringResource(R.string.dock_create_folder), Icons.Rounded.Folder) {
-                        graph.layoutRepository.convertSlotToFolder(current.slot, defaultFolderName)
-                        overlay = Overlay.FolderView(current.slot)
                     },
                 )
                 is DockItem.DockApp -> listOf(
                     MenuEntry(stringResource(R.string.action_launch), Icons.Rounded.PlayArrow) {
                         openApp(item.app)
                     },
-                    MenuEntry(stringResource(R.string.dock_convert_to_folder), Icons.Rounded.Folder) {
-                        graph.layoutRepository.convertSlotToFolder(current.slot, defaultFolderName)
-                        overlay = Overlay.FolderView(current.slot)
+                    MenuEntry(
+                        stringResource(R.string.folder_create_with_apps),
+                        Icons.Rounded.Folder,
+                    ) {
+                        overlay = Overlay.Picker(
+                            PickTarget.FolderCreate(FolderLocation.Dock(current.slot)),
+                        )
                     },
                     MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
                         LaunchUtils.openAppInfo(context, item.app.packageName)
@@ -512,18 +941,27 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                         graph.layoutRepository.setDockItem(current.slot, null)
                     },
                 )
-                is DockItem.DockFolder -> listOf(
-                    MenuEntry(stringResource(R.string.action_rename), Icons.Rounded.Edit) {
-                        overlay = Overlay.RenameFolder(current.slot)
-                    },
-                    MenuEntry(
-                        stringResource(R.string.action_remove),
-                        Icons.Rounded.Delete,
-                        destructive = true,
-                    ) {
-                        graph.layoutRepository.setDockItem(current.slot, null)
-                    },
-                )
+                is DockItem.DockFolder -> {
+                    val location = FolderLocation.Dock(current.slot)
+                    listOf(
+                        MenuEntry(item.name, Icons.Rounded.Folder) {
+                            overlay = Overlay.FolderView(location)
+                        },
+                        MenuEntry(stringResource(R.string.folder_add_apps), Icons.Rounded.Add) {
+                            overlay = Overlay.Picker(PickTarget.FolderAdd(location))
+                        },
+                        MenuEntry(stringResource(R.string.action_rename), Icons.Rounded.Edit) {
+                            overlay = Overlay.RenameFolder(location)
+                        },
+                        MenuEntry(
+                            stringResource(R.string.action_remove),
+                            Icons.Rounded.Delete,
+                            destructive = true,
+                        ) {
+                            repo.setDockItem(current.slot, null)
+                        },
+                    )
+                }
             }
             MenuSheet(
                 entries = entries,
@@ -531,44 +969,20 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             )
         }
 
-        is Overlay.FolderView -> {
-            val folder = layout.dock.getOrNull(current.slot) as? DockItem.DockFolder
-            if (folder == null) {
-                LaunchedEffect(current) {
-                    kotlinx.coroutines.delay(600)
-                    if (overlay == current &&
-                        layout.dock.getOrNull(current.slot) !is DockItem.DockFolder
-                    ) {
-                        overlay = Overlay.None
-                    }
-                }
-            } else {
-                FolderSheet(
-                    folderName = folder.name,
-                    apps = folder.apps,
-                    onLaunch = { app -> openApp(app) },
-                    onAddApps = { overlay = Overlay.Picker(PickTarget.FolderAdd(current.slot)) },
-                    onRemoveApp = { app ->
-                        graph.layoutRepository.removeAppFromFolder(current.slot, app)
-                    },
-                    onRename = { overlay = Overlay.RenameFolder(current.slot) },
-                    onDismiss = { if (overlay == current) overlay = Overlay.None },
-                )
-            }
-        }
+        is Overlay.FolderView -> Unit
 
         is Overlay.RenameFolder -> {
-            val folder = layout.dock.getOrNull(current.slot) as? DockItem.DockFolder
+            val folder = layout.folderAt(current.location)
             if (folder == null) {
                 overlay = Overlay.None
             } else {
                 RenameFolderDialog(
                     currentName = folder.name,
                     onConfirm = { name ->
-                        graph.layoutRepository.renameFolder(current.slot, name)
-                        overlay = Overlay.FolderView(current.slot)
+                        repo.renameFolder(current.location, name)
+                        overlay = Overlay.FolderView(current.location)
                     },
-                    onDismiss = { overlay = Overlay.FolderView(current.slot) },
+                    onDismiss = { overlay = Overlay.FolderView(current.location) },
                 )
             }
         }
@@ -580,14 +994,14 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                 when (item) {
                     null -> MenuEntry("${slot + 1}: $slotEmptyLabel", Icons.Rounded.Add) {
                         graph.layoutRepository.addAppToDockSlot(slot, current.app)
-                        overlay = Overlay.Drawer
+                        overlay = Overlay.None
                     }
                     is DockItem.DockFolder -> MenuEntry(
                         "${slot + 1}: ${item.name}",
                         Icons.Rounded.Folder,
                     ) {
                         graph.layoutRepository.addAppToDockSlot(slot, current.app)
-                        overlay = Overlay.Drawer
+                        overlay = Overlay.None
                     }
                     is DockItem.DockApp -> null
                 }
@@ -595,12 +1009,12 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             if (entries.isEmpty()) {
                 LaunchedEffect(current) {
                     Toast.makeText(context, dockFullMessage, Toast.LENGTH_SHORT).show()
-                    overlay = Overlay.Drawer
+                    overlay = Overlay.None
                 }
             } else {
                 MenuSheet(
                     entries = entries,
-                    onDismiss = { if (overlay == current) overlay = Overlay.Drawer },
+                    onDismiss = { if (overlay == current) overlay = Overlay.None },
                     header = {
                         Text(
                             text = stringResource(R.string.dock_slot_pick_title),
@@ -613,10 +1027,21 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
 
         is Overlay.Picker -> {
             val target = current.target
+            fun appsAt(location: FolderLocation): List<AppRef> = when (location) {
+                is FolderLocation.Home -> when (val item = layout.home.getOrNull(location.index)) {
+                    is HomeItem.HomeApp -> listOf(item.app)
+                    is HomeItem.HomeFolder -> item.apps
+                    null -> emptyList()
+                }
+                is FolderLocation.Dock -> when (val item = layout.dock.getOrNull(location.slot)) {
+                    is DockItem.DockApp -> listOf(item.app)
+                    is DockItem.DockFolder -> item.apps
+                    null -> emptyList()
+                }
+            }
             val excluded = when (target) {
-                is PickTarget.FolderAdd ->
-                    (layout.dock.getOrNull(target.slot) as? DockItem.DockFolder)
-                        ?.apps?.toSet() ?: emptySet()
+                is PickTarget.FolderAdd -> appsAt(target.location).toSet()
+                is PickTarget.FolderCreate -> appsAt(target.location).toSet()
                 // 分割の 2 つ目に 1 つ目と同じアプリは選べない
                 is PickTarget.SplitSecond -> setOf(target.first)
                 else -> emptySet()
@@ -624,11 +1049,14 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
             val pickerTitle = when (target) {
                 is PickTarget.SplitFirst -> stringResource(R.string.picker_split_first_title)
                 is PickTarget.SplitSecond -> stringResource(R.string.picker_split_second_title)
+                is PickTarget.FolderAdd -> stringResource(R.string.folder_add_apps)
+                is PickTarget.FolderCreate -> stringResource(R.string.folder_create_with_apps)
                 else -> stringResource(R.string.picker_title)
             }
             AppPickerSheet(
                 apps = apps,
-                multiSelect = target is PickTarget.FolderAdd,
+                multiSelect = target is PickTarget.FolderAdd ||
+                    target is PickTarget.FolderCreate,
                 excluded = excluded,
                 title = pickerTitle,
                 onConfirm = { picked ->
@@ -646,21 +1074,42 @@ fun HomeScreen(homeEvents: Flow<Unit>) {
                             overlay = Overlay.None
                         }
                         is PickTarget.FolderAdd -> {
-                            graph.layoutRepository.addAppsToFolder(target.slot, picked.map { it.ref })
-                            overlay = Overlay.FolderView(target.slot)
+                            repo.addAppsToFolder(target.location, picked.map { it.ref })
+                            overlay = Overlay.FolderView(target.location)
+                        }
+                        is PickTarget.FolderCreate -> {
+                            val refs = appsAt(target.location) + picked.map { it.ref }
+                            repo.createOrAddFolder(
+                                location = target.location,
+                                name = suggestedFolderName(refs),
+                                apps = picked.map { it.ref },
+                            )
+                            overlay = Overlay.FolderView(target.location)
                         }
                     }
                 },
                 onDismiss = {
                     overlay = when (target) {
-                        is PickTarget.FolderAdd -> Overlay.FolderView(target.slot)
+                        is PickTarget.FolderAdd -> Overlay.FolderView(target.location)
                         else -> Overlay.None
                     }
                 },
             )
         }
 
-        Overlay.Drawer, Overlay.None -> Unit
+        Overlay.WidgetPicker -> {
+            val providers = remember(apps) { graph.widgetHost.installedProviders() }
+            WidgetPickerSheet(
+                providers = providers,
+                onSelect = { provider ->
+                    overlay = Overlay.None
+                    onRequestWidget(provider)
+                },
+                onDismiss = { overlay = Overlay.None },
+            )
+        }
+
+        Overlay.None -> Unit
     }
 }
 
@@ -694,5 +1143,57 @@ private fun RenameFolderDialog(
     )
 }
 
+@Composable
+private fun HomePageIndicator(
+    pageCount: Int,
+    selectedPage: Int,
+    modifier: Modifier = Modifier,
+) {
+    val description = stringResource(
+        R.string.home_page_description,
+        selectedPage + 1,
+        pageCount,
+    )
+    Row(
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .semantics { contentDescription = description }
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.22f))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+    ) {
+        repeat(pageCount) { page ->
+            Box(
+                modifier = Modifier
+                    .size(if (page == selectedPage) 7.dp else 6.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (page == selectedPage) Color.White
+                        else Color.White.copy(alpha = 0.42f),
+                    ),
+            )
+        }
+    }
+}
+
 /** ホームグリッド下部に確保するドック領域の高さ(ドック本体 84dp + 上下マージン)。 */
 private val HOME_GRID_BOTTOM_RESERVED = 104.dp
+private val HOME_PAGE_EDGE_ZONE = 36.dp
+private val HOME_PAGE_INDICATOR_BOTTOM = 100.dp
+private const val HOME_PAGE_EDGE_COOLDOWN_MS = 420L
+private const val WIDGET_PAGER_INDEX = 0
+private const val PRIMARY_HOME_PAGER_INDEX = 1
+private const val STATIC_PAGE_COUNT = 2
+
+private fun buildAppLabelResolver(apps: List<AppInfo>): (AppRef) -> String {
+    val exactLabels = apps.associate { it.ref to it.label }
+    val packageLabels = apps
+        .distinctBy { it.ref.packageName }
+        .associate { it.ref.packageName to it.label }
+    return { ref ->
+        exactLabels[ref]
+            ?: packageLabels[ref.packageName]
+            ?: ref.packageName.substringAfterLast('.')
+    }
+}

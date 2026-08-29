@@ -8,18 +8,21 @@
     <string name="action_app_info">アプリ情報</string>
     <string name="action_uninstall">アンインストール</string>
     <string name="action_cancel">キャンセル</string>
+    <string name="action_close">閉じる</string>
+    <string name="action_done">完了</string>
     <string name="action_ok">OK</string>
     <string name="action_add">追加</string>
-    <string name="action_search">検索</string>
+    <string name="action_add_count">追加（%1$d）</string>
+    <string name="action_clear_search">検索内容を消去</string>
     <string name="action_rename">名前を変更</string>
+    <string name="action_more">その他の操作</string>
 
     <!-- ホーム/ドロワー共通 -->
-    <string name="menu_add_app">アプリを追加</string>
     <string name="menu_split_open">分割で 2 アプリを開く</string>
     <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
 
     <!-- ドロワー/ピッカー -->
-    <string name="drawer_title">アプリ一覧</string>
+    <string name="drawer_title">Appライブラリ</string>
     <string name="picker_title">アプリを選択</string>
     <string name="picker_split_first_title">分割で開く 1 つ目のアプリ</string>
     <string name="picker_split_second_title">分割で開くもう 1 つのアプリ</string>
@@ -27,17 +30,51 @@
     <string name="drawer_add_to_workspace">分割で開く</string>
     <string name="drawer_add_to_dock">ドックに追加</string>
 
+    <!-- 自動カテゴリー -->
+    <string name="category_social">ソーシャル</string>
+    <string name="category_productivity_finance">仕事とファイナンス</string>
+    <string name="category_photo_video">写真とビデオ</string>
+    <string name="category_entertainment">エンターテインメント</string>
+    <string name="category_games">ゲーム</string>
+    <string name="category_news_reading">情報と読書</string>
+    <string name="category_travel_weather">旅行と天気</string>
+    <string name="category_shopping_food">買い物とフード</string>
+    <string name="category_health_fitness">健康とフィットネス</string>
+    <string name="category_utilities">ユーティリティ</string>
+    <string name="category_other">その他</string>
+    <string name="category_open">%1$sを開く</string>
+    <string name="category_back">カテゴリーに戻る</string>
+    <string name="category_no_apps">該当するアプリはありません</string>
+    <string name="app_selected">%1$sを選択済み</string>
+
     <!-- ドック -->
     <string name="dock_slot_empty">空きスロット</string>
     <string name="dock_assign_app">アプリを割り当て</string>
-    <string name="dock_create_folder">フォルダを作成</string>
-    <string name="dock_convert_to_folder">フォルダに変換</string>
     <string name="dock_folder_default_name">フォルダ</string>
+    <string name="folder_edit">編集</string>
+    <string name="folder_add_apps">アプリを追加</string>
+    <string name="folder_remove_app">%1$sをフォルダから削除</string>
+    <string name="folder_create_with_apps">フォルダを作成</string>
     <string name="dock_open_drawer">アプリ一覧を開く</string>
     <string name="dock_slot_pick_title">どのスロットに追加しますか?</string>
+
+    <!-- ウィジェット専用ページ -->
+    <string name="widget_page_title">ウィジェット</string>
+    <string name="widget_add">ウィジェットを追加</string>
+    <string name="widget_picker_title">ウィジェットを選択</string>
+    <string name="widget_search_hint">ウィジェットを検索</string>
+    <string name="widget_empty_title">ウィジェットを追加</string>
+    <string name="widget_empty_body">よく使う情報や操作を、この専用ページにまとめられます。</string>
+    <string name="widget_no_providers">利用できるウィジェットがありません</string>
+    <string name="widget_remove">%1$sを削除</string>
+    <string name="widget_move_up">%1$sを上へ移動</string>
+    <string name="widget_move_down">%1$sを下へ移動</string>
+    <string name="widget_unavailable">このウィジェットは利用できません</string>
+    <string name="home_page_description">ホーム %1$d / %2$d</string>
 
     <!-- トースト/エラー -->
     <string name="toast_launch_failed">アプリを起動できませんでした</string>
     <string name="toast_split_unsupported">この端末では分割起動がサポートされていない可能性があります</string>
     <string name="toast_dock_full">ドックに空きスロットがありません</string>
+    <string name="toast_home_pages_full">ホーム画面は最大%1$dページです</string>
 </resources>

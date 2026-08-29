@@ -1,47 +1,59 @@
 package io.github.hatake716.ohagi.ui.common
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.R
+import io.github.hatake716.ohagi.data.AppCategory
 import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
- * アプリ選択用の共通ボトムシート。
- * multiSelect = false: タップで即 onConfirm(1 件)
- * multiSelect = true: チェックボックスで複数選択し「追加」で確定
+ * 分割起動、Dock割り当て、フォルダ追加で共用する自動カテゴリー式ピッカー。
+ * 単一選択はタップで即確定し、複数選択はカテゴリーを跨いで選択状態を保持する。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,101 +66,188 @@ fun AppPickerSheet(
     excluded: Set<AppRef> = emptySet(),
 ) {
     var query by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf<AppCategory?>(null) }
     val selected = remember { mutableStateListOf<AppInfo>() }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val availableApps = remember(apps, excluded) {
+        apps.filter { it.ref !in excluded }
+    }
+    val selectedRefs = selected.mapTo(mutableSetOf()) { it.ref }
+    val categoryLabel = selectedCategory?.let { appCategoryTitle(it) }
 
-    val visibleApps = remember(apps, query, excluded) {
-        apps
-            .filter { it.ref !in excluded }
-            .filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
+    fun select(app: AppInfo) {
+        if (!multiSelect) {
+            onConfirm(listOf(app))
+            return
+        }
+        val existingIndex = selected.indexOfFirst { it.ref == app.ref }
+        if (existingIndex >= 0) selected.removeAt(existingIndex) else selected.add(app)
+    }
+
+    BackHandler(enabled = selectedCategory != null) {
+        selectedCategory = null
     }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        // ドロワーと同じく半透明にして背後の壁紙をうっすら透かす。
-        containerColor = Ink.copy(alpha = 0.55f),
-        // 半透明の暗背景に対し、文字・アイコンを白系にして視認性を確保する。
+        shape = IosSheetShape,
+        containerColor = Ink.copy(alpha = 0.90f),
         contentColor = Kome,
+        scrimColor = Color.Black.copy(alpha = 0.32f),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.85f)
-                .navigationBarsPadding()
+                .fillMaxHeight(0.88f)
+                .navigationBarsPadding(),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
+                if (selectedCategory != null) {
+                    IosGlassIconButton(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = stringResource(R.string.category_back),
+                        onClick = { selectedCategory = null },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    categoryLabel?.let {
+                        Text(
+                            text = it,
+                            color = Kome.copy(alpha = 0.62f),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 if (multiSelect) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = IOS_SELECTION_BLUE,
+                        ),
+                    ) {
                         Text(stringResource(R.string.action_cancel))
                     }
                     Spacer(Modifier.width(4.dp))
                     Button(
                         enabled = selected.isNotEmpty(),
                         onClick = { onConfirm(selected.toList()) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IOS_SELECTION_BLUE,
+                            contentColor = Color.White,
+                        ),
                     ) {
-                        Text(stringResource(R.string.action_add))
+                        Text(
+                            text = if (selected.isEmpty()) {
+                                stringResource(R.string.action_add)
+                            } else {
+                                stringResource(R.string.action_add_count, selected.size)
+                            },
+                        )
                     }
                 }
             }
-            OutlinedTextField(
+
+            IosSearchField(
                 value = query,
-                onValueChange = { query = it },
-                singleLine = true,
-                placeholder = { Text(stringResource(R.string.search_apps_hint)) },
+                onValueChange = {
+                    query = it
+                    if (it.isNotBlank()) selectedCategory = null
+                },
+                placeholder = stringResource(R.string.search_apps_hint),
+                clearContentDescription = stringResource(R.string.action_clear_search),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp),
             )
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            ) {
-                items(visibleApps, key = { "${it.ref.packageName}/${it.ref.className}" }) { app ->
-                    val isSelected = selected.contains(app)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (multiSelect) {
-                                    if (isSelected) selected.remove(app) else selected.add(app)
-                                } else {
-                                    onConfirm(listOf(app))
-                                }
-                            }
-                            .padding(horizontal = 20.dp, vertical = 8.dp)
-                    ) {
-                        AppIcon(app = app.ref, size = 40.dp)
-                        Spacer(Modifier.width(16.dp))
-                        Text(
-                            text = app.label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (multiSelect) {
-                            Checkbox(
-                                checked = isSelected,
-                                onCheckedChange = { checked ->
-                                    if (checked) selected.add(app) else selected.remove(app)
-                                },
-                            )
-                        }
-                    }
-                }
+
+            CategorizedAppBrowser(
+                apps = availableApps,
+                query = query,
+                selectedCategory = selectedCategory,
+                onCategorySelected = { selectedCategory = it },
+                onPreviewAppClick = ::select,
+                selectedApps = selectedRefs,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            ) { app ->
+                PickerAppCell(
+                    app = app,
+                    selected = app.ref in selectedRefs,
+                    onClick = { select(app) },
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun PickerAppCell(
+    app: AppInfo,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember(app.ref) { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale = animateIosPressScale(
+        pressed = pressed,
+        label = "pickerCategoryCellScale",
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 4.dp, vertical = 10.dp),
+    ) {
+        Box {
+            AppIcon(app = app.ref, size = 56.dp)
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = stringResource(R.string.app_selected, app.label),
+                    tint = IOS_SELECTION_BLUE,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(Ink),
+                )
+            }
+        }
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = app.label,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }

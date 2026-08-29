@@ -1,13 +1,8 @@
 package io.github.hatake716.ohagi.ui.home
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,12 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,53 +30,59 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.hatake716.ohagi.LocalGraph
+import io.github.hatake716.ohagi.R
+import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.data.LayoutState
-import io.github.hatake716.ohagi.ui.common.AppIcon
-import io.github.hatake716.ohagi.ui.dragdrop.DragController
-import io.github.hatake716.ohagi.ui.dragdrop.DragOrigin
+import io.github.hatake716.ohagi.ui.common.AppIconImage
+import io.github.hatake716.ohagi.ui.common.IosMoreButton
+import io.github.hatake716.ohagi.ui.common.IosFolderIcon
+import io.github.hatake716.ohagi.ui.common.animateIosPressScale
+import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
+import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
+import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
+import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
+import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
+import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
+import io.github.hatake716.ohagi.ui.theme.Azuki
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
- * ホーム主画面のアイコングリッド(固定 [LayoutState.HOME_CELL_COUNT] セル)。
- * ドラッグ状態は共有 [DragController] に委譲し、各セルは矩形を報告し、長押しで
- * ドラッグ開始をトリガーするだけ。指の追従・浮遊アイコン・ドロップ確定は親が担う。
- *
- * @param drag        共有ドラッグ状態
- * @param rootCoords  親(HomeScreen ルート Box)の座標。矩形/指位置をルート座標へ変換
- * @param onCellTap   セルのタップ(アプリなら起動、空きは無反応)
- * @param onCellLongPressNoMove セルを長押しして動かさず離したとき(メニュー)
- * @param onDrop      ドラッグを離したとき(親が commitDrop する)
+ * ホーム主画面の固定グリッド。
+ * 各セルが公式 Compose D&D の source/target を直接持つため、画面座標による判定は不要。
  */
 @Composable
 fun HomeGrid(
     home: List<HomeItem?>,
-    drag: DragController,
-    rootCoords: () -> LayoutCoordinates?,
+    indexOffset: Int,
+    activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     onCellTap: (Int) -> Unit,
-    onCellLongPressNoMove: (Int) -> Unit,
-    onDrop: () -> Unit,
+    onCellMenu: (Int) -> Unit,
+    onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (Int, DragPayload) -> Boolean,
+    onDragMoved: (Offset) -> Unit,
+    onDragSessionStarted: (DragPayload) -> Unit,
+    onDragSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val density = LocalDensity.current
-    val movedThresholdPx = remember(density) { with(density) { 12.dp.toPx() } }
-
-    // 6 行を領域いっぱいに均等配置し、最下段がドック直上まで来るようにする。
-    // (LazyVerticalGrid は行が上詰めになり下に余白が残るため、各行の高さを固定する)
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        // 6行を領域いっぱいに均等配置し、最下段をドック直上にそろえる。
         val rowHeight = (maxHeight - 8.dp) / LayoutState.HOME_ROWS
         LazyVerticalGrid(
             columns = GridCells.Fixed(LayoutState.HOME_COLUMNS),
@@ -89,146 +90,217 @@ fun HomeGrid(
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(home, key = { i, _ -> i }) { index, item ->
+            itemsIndexed(home, key = { index, _ -> indexOffset + index }) { index, item ->
+                val globalIndex = indexOffset + index
                 HomeCell(
-                    index = index,
+                    index = globalIndex,
                     item = item,
-                    isDragging = drag.isSource(DragOrigin.Home(index)),
-                    drag = drag,
-                    rootCoords = rootCoords,
-                    movedThresholdPx = movedThresholdPx,
                     rowHeight = rowHeight,
-                    onTap = { onCellTap(index) },
-                    onLongPressNoMove = { onCellLongPressNoMove(index) },
-                    onDrop = onDrop,
+                    activeDrag = activeDrag,
+                    labelOf = labelOf,
+                    isDragging = activeDrag == DragPayload.FromHome(globalIndex),
+                    onTap = { onCellTap(globalIndex) },
+                    onMenu = { onCellMenu(globalIndex) },
+                    onDrop = { payload, position, stack ->
+                        onDrop(globalIndex, payload, position, stack)
+                    },
+                    canStack = { payload -> canStack(globalIndex, payload) },
+                    onDragMoved = onDragMoved,
+                    onDragSessionStarted = onDragSessionStarted,
+                    onDragSessionEnded = onDragSessionEnded,
                 )
             }
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeCell(
     index: Int,
     item: HomeItem?,
+    rowHeight: Dp,
+    activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     isDragging: Boolean,
-    drag: DragController,
-    rootCoords: () -> LayoutCoordinates?,
-    movedThresholdPx: Float,
-    rowHeight: androidx.compose.ui.unit.Dp,
     onTap: () -> Unit,
-    onLongPressNoMove: () -> Unit,
-    onDrop: () -> Unit,
+    onMenu: () -> Unit,
+    onDrop: (DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (DragPayload) -> Boolean,
+    onDragMoved: (Offset) -> Unit,
+    onDragSessionStarted: (DragPayload) -> Unit,
+    onDragSessionEnded: () -> Unit,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.9f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow,
-        ),
+    var pressed by remember { mutableStateOf(false) }
+    val scale = animateIosPressScale(
+        pressed = pressed,
         label = "homeCellScale",
     )
+    val haptic = LocalHapticFeedback.current
 
-    var cellCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var totalDrag by remember { mutableStateOf(Offset.Zero) }
+    val payload = item?.let { DragPayload.FromHome(index) }
+    val dragIconApp = when (item) {
+        is HomeItem.HomeApp -> item.app
+        is HomeItem.HomeFolder -> item.apps.firstOrNull()
+        null -> null
+    }
+    val dragIcon by rememberAppIconBitmap(dragIconApp)
+    val folderDragIcons by rememberAppIconBitmaps(
+        (item as? HomeItem.HomeFolder)?.apps.orEmpty(),
+    )
 
-    fun toRoot(local: Offset): Offset {
-        val root = rootCoords() ?: return local
-        val cell = cellCoords ?: return local
-        return root.localPositionOf(cell, local)
+    var dropHovered by remember { mutableStateOf(false) }
+    var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
+    var folderReady by remember { mutableStateOf(false) }
+    val stackCandidate = activeDrag?.let(canStack) == true
+    val hoverColor by animateColorAsState(
+        targetValue = when {
+            folderReady -> Color.White.copy(alpha = 0.16f)
+            dropHovered -> Azuki.copy(alpha = 0.24f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "homeDropHover",
+    )
+    val dropTarget = rememberOhagiDropTarget(
+        onStarted = onDragSessionStarted,
+        onEntered = { dropHovered = true },
+        onMoved = { position ->
+            folderReady = stackCandidate &&
+                folderTargetBounds?.contains(position) == true
+            onDragMoved(position)
+        },
+        onExited = {
+            dropHovered = false
+            folderReady = false
+        },
+        onEnded = {
+            dropHovered = false
+            folderReady = false
+            onDragSessionEnded()
+        },
+        onDrop = { dropped, position ->
+            dropHovered = false
+            val stack = canStack(dropped) &&
+                folderTargetBounds?.contains(position) == true
+            folderReady = false
+            onDrop(dropped, position, stack)
+        },
+    )
+
+    val sourceModifier = if (payload == null) {
+        Modifier
+    } else {
+        Modifier.ohagiDragSource(
+            payload = payload,
+            icon = dragIcon,
+            folderIcons = folderDragIcons,
+            onTap = onTap,
+            onPressChanged = { pressed = it },
+            onDragStarted = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onDragSessionStarted(payload)
+            },
+        )
     }
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(rowHeight)
-            .onGloballyPositioned { coords ->
-                cellCoords = coords
-                val root = rootCoords()
-                if (root != null) {
-                    val topLeft = root.localPositionOf(coords, Offset.Zero)
-                    drag.reportHomeCell(
-                        index,
-                        Rect(topLeft, Size(coords.size.width.toFloat(), coords.size.height.toFloat())),
-                    )
-                }
-            }
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .alpha(if (isDragging) 0.35f else 1f)
+            .alpha(if (isDragging) 0.20f else 1f)
             .clip(RoundedCornerShape(18.dp))
-            .pointerInput(item) {
-                val draggable = item is HomeItem.HomeApp || item is HomeItem.HomeFolder
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { local ->
-                        totalDrag = Offset.Zero
-                        if (draggable) {
-                            val size = Offset(this.size.width.toFloat(), this.size.height.toFloat())
-                            drag.startHome(index, item, toRoot(local), size)
-                        }
-                    },
-                    onDrag = { change, delta ->
-                        change.consume()
-                        totalDrag += delta
-                        if (draggable) drag.move(toRoot(change.position))
-                    },
-                    onDragEnd = {
-                        if (!draggable || totalDrag.getDistance() < movedThresholdPx) {
-                            if (draggable) drag.reset()
-                            onLongPressNoMove()
-                        } else {
-                            onDrop()
-                        }
-                    },
-                    onDragCancel = { drag.reset() },
-                )
-            }
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onTap,
-            )
-            .padding(horizontal = 2.dp, vertical = 8.dp),
+            .background(hoverColor)
+            .ohagiDropTarget(dropTarget)
+            .then(sourceModifier),
     ) {
-        HomeCellContent(item)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 2.dp, vertical = 8.dp),
+        ) {
+            HomeCellContent(
+                item = item,
+                appIcon = dragIcon,
+                folderIcons = folderDragIcons,
+                labelOf = labelOf,
+                folderHighlighted = folderReady,
+                onIconBounds = { folderTargetBounds = it },
+            )
+        }
+
+        if (item != null) {
+            IosMoreButton(
+                contentDescription = stringResource(R.string.action_more),
+                onClick = onMenu,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 3.dp),
+            )
+        }
     }
 }
 
-/** セルの中身(アイコン + ラベル / 空きセル)。 */
+/** セルの中身（アイコン + ラベル / 空きセル）。 */
 @Composable
-internal fun HomeCellContent(item: HomeItem?) {
+internal fun HomeCellContent(
+    item: HomeItem?,
+    appIcon: ImageBitmap?,
+    folderIcons: List<ImageBitmap?>,
+    labelOf: (AppRef) -> String,
+    folderHighlighted: Boolean = false,
+    onIconBounds: (Rect) -> Unit = {},
+) {
     when (item) {
         is HomeItem.HomeApp -> {
-            AppIcon(app = item.app, size = 56.dp)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(HOME_ICON_TARGET_SIZE)
+                    .onGloballyPositioned { onIconBounds(it.boundsInRoot()) },
+            ) {
+                AppIconImage(icon = appIcon, size = HOME_ICON_SIZE)
+            }
             Spacer(Modifier.height(4.dp))
-            HomeLabel(text = homeLabelOf(item))
+            HomeLabel(text = labelOf(item.app))
         }
         is HomeItem.HomeFolder -> {
-            AppIcon(app = item.apps.firstOrNull() ?: return, size = 56.dp)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(HOME_ICON_TARGET_SIZE)
+                    .onGloballyPositioned { onIconBounds(it.boundsInRoot()) },
+            ) {
+                IosFolderIcon(
+                    apps = item.apps,
+                    preloadedIcons = folderIcons,
+                    size = HOME_ICON_SIZE,
+                    highlighted = folderHighlighted,
+                )
+            }
             Spacer(Modifier.height(4.dp))
             HomeLabel(text = item.name)
         }
         null -> {
-            Box(Modifier.height(56.dp).fillMaxWidth())
+            Box(
+                Modifier
+                    .size(HOME_ICON_TARGET_SIZE)
+                    .onGloballyPositioned { onIconBounds(it.boundsInRoot()) },
+            )
             Spacer(Modifier.height(4.dp))
             HomeLabel(text = "")
         }
     }
 }
 
-@Composable
-private fun homeLabelOf(item: HomeItem.HomeApp): String {
-    val graph = LocalGraph.current
-    val apps = graph.appRepository.apps.collectAsState().value
-    return remember(item.app, apps) { graph.appRepository.labelOf(item.app) }
-}
+/** iPhoneの4列ホームに近い、アイコン本体と隣接余白の視覚比率。 */
+private val HOME_ICON_SIZE = 60.dp
+private val HOME_ICON_TARGET_SIZE = 68.dp
 
 /** 壁紙の上でも読める白 + ドロップシャドウのラベル。空文字なら高さだけ確保。 */
 @Composable
