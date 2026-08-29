@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
@@ -161,25 +162,51 @@ fun HomeScreen(
     var rootBounds by remember { mutableStateOf<Rect?>(null) }
     var edgeTransitionInProgress by remember { mutableStateOf(false) }
     var edgeDestinationHomePage by remember { mutableStateOf<Int?>(null) }
-    var requestedHomePageCount by remember { mutableStateOf<Int?>(null) }
     var createdPageDuringDrag by remember { mutableStateOf(false) }
     var edgeDropCommitted by remember { mutableStateOf(false) }
+    var edgeDropBaselineHome by remember { mutableStateOf<List<HomeItem?>?>(null) }
     var pageLimitToastShown by remember { mutableStateOf(false) }
     val repo = graph.layoutRepository
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
     val edgeZonePx = with(LocalDensity.current) { HOME_PAGE_EDGE_ZONE.toPx() }
 
-    LaunchedEffect(layout.homePageCount, requestedHomePageCount) {
-        val expected = requestedHomePageCount ?: return@LaunchedEffect
-        if (layout.homePageCount >= expected) {
-            // pager上ではホームページ番号とindexが一致する（0はWidgetページ）。
+    LaunchedEffect(layout.home, edgeDropCommitted, edgeDropBaselineHome) {
+        val baseline = edgeDropBaselineHome ?: return@LaunchedEffect
+        if (edgeDropCommitted && layout.home != baseline) {
+            // 元の追加ページが空になって同時回収されても、生成後の最終ホームを表示する。
             pagerState.scrollToPage(layout.homePageCount)
-            requestedHomePageCount = null
             edgeDestinationHomePage = null
             edgeDropCommitted = false
+            edgeDropBaselineHome = null
             delay(HOME_PAGE_EDGE_COOLDOWN_MS)
             edgeTransitionInProgress = false
         }
+    }
+
+    // 空になった中間／末尾ページが消えた時も、表示していた論理ページを維持する。
+    LaunchedEffect(pagerState) {
+        var previousPage = pagerState.currentPage
+        var previousHomePageCount = layout.homePageCount
+        snapshotFlow { pagerState.currentPage to layout.homePageCount }
+            .collect { (currentPage, currentHomePageCount) ->
+                if (currentHomePageCount < previousHomePageCount) {
+                    val destination = when {
+                        previousPage == previousHomePageCount + 1 -> currentHomePageCount + 1
+                        previousPage in 1..previousHomePageCount ->
+                            previousPage.coerceAtMost(currentHomePageCount)
+                        else -> currentPage.coerceIn(0, currentHomePageCount + 1)
+                    }
+                    if (destination != currentPage) {
+                        pagerState.animateScrollToPage(destination)
+                        previousPage = destination
+                    } else {
+                        previousPage = currentPage
+                    }
+                } else {
+                    previousPage = currentPage
+                }
+                previousHomePageCount = currentHomePageCount
+            }
     }
 
     LaunchedEffect(activeDrag) {
@@ -187,7 +214,7 @@ fun HomeScreen(
             edgeTransitionInProgress = false
             if (!edgeDropCommitted) {
                 edgeDestinationHomePage = null
-                requestedHomePageCount = null
+                edgeDropBaselineHome = null
             }
             pageLimitToastShown = false
         }
@@ -386,8 +413,11 @@ fun HomeScreen(
         payload: DragPayload,
     ): Boolean {
         appMoveSource(payload)?.let { source ->
+            if (createdPageDuringDrag) {
+                edgeDropBaselineHome = layout.home
+                edgeDropCommitted = true
+            }
             repo.moveAppToHomePage(destinationPage, source)
-            edgeDropCommitted = requestedHomePageCount != null
             return true
         }
         val accepted = when (payload) {
@@ -409,7 +439,10 @@ fun HomeScreen(
 
             else -> false
         }
-        if (accepted) edgeDropCommitted = requestedHomePageCount != null
+        if (accepted && createdPageDuringDrag) {
+            edgeDropBaselineHome = layout.home
+            edgeDropCommitted = true
+        }
         return accepted
     }
 
@@ -452,7 +485,6 @@ fun HomeScreen(
         if (createdPageDuringDrag && !atRightEdge) {
             createdPageDuringDrag = false
             edgeDestinationHomePage = null
-            requestedHomePageCount = null
         }
 
         when {
@@ -474,7 +506,6 @@ fun HomeScreen(
                     layout.homePageCount < io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT -> {
                         createdPageDuringDrag = true
                         edgeDestinationHomePage = layout.homePageCount
-                        requestedHomePageCount = layout.homePageCount + 1
                         // OSのDROPまでは現在のセルtargetを維持し、DROP内で生成と移動を原子的に行う。
                         edgeTransitionInProgress = false
                     }
@@ -528,23 +559,7 @@ fun HomeScreen(
     fun endDragSession() {
         trashHovered = false
         activeDrag = null
-        if (createdPageDuringDrag) {
-            createdPageDuringDrag = false
-            val pageCountBeforeCleanup = maxOf(
-                layout.homePageCount,
-                (edgeDestinationHomePage ?: -1) + 1,
-            )
-            scope.launch {
-                // onDropのDataStore更新を先に完了させ、空のままの追加ページだけを除去する。
-                delay(700)
-                repo.trimTrailingEmptyHomePages()
-                delay(700)
-                val remainingPages = repo.state.value.homePageCount
-                if (remainingPages < pageCountBeforeCleanup && pagerState.currentPage > remainingPages) {
-                    pagerState.scrollToPage(remainingPages)
-                }
-            }
-        }
+        createdPageDuringDrag = false
     }
 
     // HomeGridの各セルがPager再構成で入れ替わっても、この親targetはセッション中存続する。

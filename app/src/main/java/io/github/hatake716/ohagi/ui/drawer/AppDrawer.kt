@@ -54,7 +54,7 @@ import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosSearchField
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
-import io.github.hatake716.ohagi.ui.common.animateIosPressScale
+import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.common.appCategoryTitle
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
@@ -199,9 +199,11 @@ private fun DrawerCell(
     onDragStarted: (DragPayload) -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val scale = animateIosPressScale(
+    var isDragging by remember { mutableStateOf(false) }
+    val dragVisual = rememberIosDragVisualState(
         pressed = pressed,
-        label = "drawerCellScale",
+        isDragging = isDragging,
+        label = "drawerCell",
     )
     val haptic = LocalHapticFeedback.current
 
@@ -211,16 +213,21 @@ private fun DrawerCell(
     Box(
         modifier = Modifier
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = dragVisual.scale
+                scaleY = dragVisual.scale
+                alpha = dragVisual.alpha
             }
             .clip(RoundedCornerShape(18.dp))
             .ohagiDragSource(
                 payload = payload,
                 icon = icon,
                 onTap = onTap,
-                onPressChanged = { pressed = it },
+                onPressChanged = {
+                    pressed = it
+                    if (!it) isDragging = false
+                },
                 onDragStarted = {
+                    isDragging = true
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onDragStarted(payload)
                 },

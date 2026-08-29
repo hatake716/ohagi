@@ -1,11 +1,5 @@
 package io.github.hatake716.ohagi.data
 
-/** Appライブラリ直前へ空のホームページを追加する純粋操作。 */
-internal fun LayoutState.appendEmptyHomePage(): LayoutState {
-    if (homePageCount >= LayoutState.MAX_HOME_PAGE_COUNT) return this
-    return copy(home = home + List(LayoutState.HOME_CELL_COUNT) { null })
-}
-
 /** 指定ページが存在するところまで、上限内で空ページを補う。 */
 private fun LayoutState.ensureHomePage(page: Int): LayoutState {
     if (page !in 0 until LayoutState.MAX_HOME_PAGE_COUNT) return this
@@ -59,19 +53,19 @@ internal fun LayoutState.moveDockItemToHomePage(
     return expanded.moveDockItemToHome(dockSlot, target)
 }
 
-/** 先頭ページは必ず残し、末尾の連続した空ページだけを取り除く。 */
-internal fun LayoutState.withoutTrailingEmptyHomePages(): LayoutState {
-    var pageCount = homePageCount
-    while (pageCount > 1) {
-        val start = (pageCount - 1) * LayoutState.HOME_CELL_COUNT
-        val lastPageHasItem = home
-            .subList(start, start + LayoutState.HOME_CELL_COUNT)
-            .any { it != null }
-        if (lastPageHasItem) break
-        pageCount--
+/**
+ * 先頭ページは空でも必ず残し、項目が0件になった追加ページをすべて取り除く。
+ * 中間ページが空になった場合も、後続のページをセル位置ごと左へ詰める。
+ */
+internal fun LayoutState.withoutEmptyAdditionalHomePages(): LayoutState {
+    val pages = List(homePageCount) { page -> homePage(page) }
+    val compacted = buildList {
+        addAll(pages.first())
+        pages.drop(1).forEach { page ->
+            if (page.any { it != null }) addAll(page)
+        }
     }
-    val retained = pageCount * LayoutState.HOME_CELL_COUNT
-    return if (retained == home.size) this else copy(home = home.take(retained))
+    return if (compacted == home) this else copy(home = compacted)
 }
 
 internal fun LayoutState.withWidgetMoved(appWidgetId: Int, direction: Int): LayoutState {

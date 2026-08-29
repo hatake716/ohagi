@@ -20,20 +20,15 @@ class LayoutPageOperationsTest {
     }
 
     @Test
-    fun appendedPageAcceptsAtomicCrossPageMove() {
-        val app = app("moved")
+    fun emptyPrimaryPageIsAlwaysRetained() {
         val state = LayoutState(
-            home = List(LayoutState.HOME_CELL_COUNT) { index ->
-                if (index == 0) HomeItem.HomeApp(app) else null
-            },
-        ).appendEmptyHomePage()
+            home = List(LayoutState.HOME_CELL_COUNT * 2) { null },
+        )
 
-        val target = homeGlobalIndex(page = 1, cell = 5)
-        val result = state.moveAppToHome(target, AppMoveSource.Home(0))
+        val result = state.withoutEmptyAdditionalHomePages()
 
-        assertEquals(2, result.homePageCount)
-        assertNull(result.home[0])
-        assertEquals(HomeItem.HomeApp(app), result.home[target])
+        assertEquals(1, result.homePageCount)
+        assertEquals(List(LayoutState.HOME_CELL_COUNT) { null }, result.home)
     }
 
     @Test
@@ -78,18 +73,27 @@ class LayoutPageOperationsTest {
     }
 
     @Test
-    fun canceledEdgeDragRemovesOnlyTrailingEmptyPages() {
-        val occupied = app("occupied")
+    fun emptyMiddlePageIsRemovedAndLaterPageKeepsItsCell() {
+        val first = app("first")
+        val later = app("later")
         val state = LayoutState(
             home = List(LayoutState.HOME_CELL_COUNT * 3) { index ->
-                if (index == LayoutState.HOME_CELL_COUNT) HomeItem.HomeApp(occupied) else null
+                when (index) {
+                    3 -> HomeItem.HomeApp(first)
+                    LayoutState.HOME_CELL_COUNT * 2 + 7 -> HomeItem.HomeApp(later)
+                    else -> null
+                }
             },
         )
 
-        val result = state.withoutTrailingEmptyHomePages()
+        val result = state.withoutEmptyAdditionalHomePages()
 
         assertEquals(2, result.homePageCount)
-        assertEquals(HomeItem.HomeApp(occupied), result.home[LayoutState.HOME_CELL_COUNT])
+        assertEquals(HomeItem.HomeApp(first), result.home[3])
+        assertEquals(
+            HomeItem.HomeApp(later),
+            result.home[LayoutState.HOME_CELL_COUNT + 7],
+        )
     }
 
     @Test
@@ -101,7 +105,44 @@ class LayoutPageOperationsTest {
             },
         )
 
-        assertEquals(2, state.withoutTrailingEmptyHomePages().homePageCount)
+        assertEquals(2, state.withoutEmptyAdditionalHomePages().homePageCount)
+    }
+
+    @Test
+    fun folderIconKeepsAdditionalPage() {
+        val folder = HomeItem.HomeFolder(
+            name = "Folder",
+            apps = listOf(app("one")),
+        )
+        val state = LayoutState(
+            home = List(LayoutState.HOME_CELL_COUNT * 2) { index ->
+                if (index == LayoutState.HOME_CELL_COUNT + 2) folder else null
+            },
+        )
+
+        val result = state.withoutEmptyAdditionalHomePages()
+
+        assertEquals(2, result.homePageCount)
+        assertEquals(folder, result.home[LayoutState.HOME_CELL_COUNT + 2])
+    }
+
+    @Test
+    fun movingLastItemOffAdditionalPageRemovesThatPage() {
+        val moved = app("dock")
+        val sourceIndex = LayoutState.HOME_CELL_COUNT + 4
+        val state = LayoutState(
+            home = List(LayoutState.HOME_CELL_COUNT * 2) { index ->
+                if (index == sourceIndex) HomeItem.HomeApp(moved) else null
+            },
+        )
+
+        val result = state
+            .moveHomeItemToDock(sourceIndex, dockSlot = 0)
+            .withoutEmptyAdditionalHomePages()
+
+        assertEquals(1, result.homePageCount)
+        assertEquals(DockItem.DockApp(moved), result.dock[0])
+        assertEquals(List(LayoutState.HOME_CELL_COUNT) { null }, result.home)
     }
 
     @Test

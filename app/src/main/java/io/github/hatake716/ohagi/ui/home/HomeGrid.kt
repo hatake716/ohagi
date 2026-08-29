@@ -26,7 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -51,14 +50,13 @@ import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
-import io.github.hatake716.ohagi.ui.common.animateIosPressScale
+import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
 import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
-import io.github.hatake716.ohagi.ui.theme.Azuki
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
@@ -131,9 +129,14 @@ private fun HomeCell(
     onDragSessionEnded: () -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val scale = animateIosPressScale(
+    var dropHovered by remember { mutableStateOf(false) }
+    var folderReady by remember { mutableStateOf(false) }
+    val dragVisual = rememberIosDragVisualState(
         pressed = pressed,
-        label = "homeCellScale",
+        isDragging = isDragging,
+        dropHovered = dropHovered,
+        folderReady = folderReady,
+        label = "homeCell",
     )
     val haptic = LocalHapticFeedback.current
 
@@ -148,14 +151,12 @@ private fun HomeCell(
         (item as? HomeItem.HomeFolder)?.apps.orEmpty(),
     )
 
-    var dropHovered by remember { mutableStateOf(false) }
     var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
-    var folderReady by remember { mutableStateOf(false) }
     val stackCandidate = activeDrag?.let(canStack) == true
     val hoverColor by animateColorAsState(
         targetValue = when {
-            folderReady -> Color.White.copy(alpha = 0.16f)
-            dropHovered -> Azuki.copy(alpha = 0.24f)
+            folderReady -> Color.White.copy(alpha = 0.18f)
+            dropHovered -> Color.White.copy(alpha = 0.10f)
             else -> Color.Transparent
         },
         animationSpec = tween(durationMillis = 120),
@@ -183,7 +184,9 @@ private fun HomeCell(
             val stack = canStack(dropped) &&
                 folderTargetBounds?.contains(position) == true
             folderReady = false
-            onDrop(dropped, position, stack)
+            val accepted = onDrop(dropped, position, stack)
+            if (accepted) dragVisual.settle(stack)
+            accepted
         },
     )
 
@@ -208,10 +211,10 @@ private fun HomeCell(
             .fillMaxWidth()
             .height(rowHeight)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = dragVisual.scale
+                scaleY = dragVisual.scale
+                alpha = dragVisual.alpha
             }
-            .alpha(if (isDragging) 0.20f else 1f)
             .clip(RoundedCornerShape(18.dp))
             .background(hoverColor)
             .ohagiDropTarget(dropTarget)

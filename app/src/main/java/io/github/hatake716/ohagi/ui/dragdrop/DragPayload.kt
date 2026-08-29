@@ -239,30 +239,46 @@ fun Modifier.ohagiDragSource(
 }
 
 private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
-    val iconSize = min(size.minDimension, 72.dp.toPx())
+    // 元アイコンより約1.1倍大きいpreviewを、影の余白を残して指の下へ浮かせる。
+    val iconSize = min(size.minDimension * 0.90f, 72.dp.toPx())
     val left = (size.width - iconSize) / 2f
     val top = (size.height - iconSize) / 2f
     val corner = iconSize * IOS_ICON_CORNER_RATIO
+    val farShadowOffset = min(5.dp.toPx(), (size.height - iconSize).coerceAtLeast(2f) / 2f)
+    val nearShadowOffset = min(2.5.dp.toPx(), farShadowOffset * 0.55f)
 
-    // ぼかしを使えないDragDecorationでも硬く見えないよう、二層の影で持ち上がりを表す。
+    // DragDecorationではblurを使わず、広い影と接地影を重ねてiOSのlift感を近似する。
     drawRoundRect(
-        color = Color.Black.copy(alpha = 0.14f),
-        topLeft = Offset(left, top + 6.dp.toPx()),
+        color = Color.Black.copy(alpha = 0.11f),
+        topLeft = Offset(left, top + farShadowOffset),
         size = Size(iconSize, iconSize),
         cornerRadius = CornerRadius(corner, corner),
     )
     drawRoundRect(
-        color = Color.Black.copy(alpha = 0.22f),
-        topLeft = Offset(left, top + 3.dp.toPx()),
+        color = Color.Black.copy(alpha = 0.25f),
+        topLeft = Offset(left, top + nearShadowOffset),
         size = Size(iconSize, iconSize),
         cornerRadius = CornerRadius(corner, corner),
     )
     if (icon != null) {
-        drawImage(
-            image = icon,
-            dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-            dstSize = IntSize(iconSize.roundToInt(), iconSize.roundToInt()),
-        )
+        val clip = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    left = left,
+                    top = top,
+                    right = left + iconSize,
+                    bottom = top + iconSize,
+                    cornerRadius = CornerRadius(corner, corner),
+                ),
+            )
+        }
+        clipPath(clip) {
+            drawImage(
+                image = icon,
+                dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+                dstSize = IntSize(iconSize.roundToInt(), iconSize.roundToInt()),
+            )
+        }
     } else {
         drawRoundRect(
             color = Color(0xFFE8D8C4),
@@ -282,7 +298,7 @@ private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
 
 /** フォルダ本体を移動中も、単体アプリではなく3×3プレビューの影を表示する。 */
 private fun DrawScope.drawOhagiFolderDragDecoration(icons: List<ImageBitmap?>) {
-    val folderSize = min(size.minDimension, 72.dp.toPx())
+    val folderSize = min(size.minDimension * 0.90f, 72.dp.toPx())
     val left = (size.width - folderSize) / 2f
     val top = (size.height - folderSize) / 2f
     val corner = folderSize * IOS_ICON_CORNER_RATIO
@@ -292,9 +308,17 @@ private fun DrawScope.drawOhagiFolderDragDecoration(icons: List<ImageBitmap?>) {
     val contentLeft = left + (folderSize - contentSize) / 2f
     val contentTop = top + (folderSize - contentSize) / 2f
 
+    val farShadowOffset = min(5.dp.toPx(), (size.height - folderSize).coerceAtLeast(2f) / 2f)
+    val nearShadowOffset = min(2.5.dp.toPx(), farShadowOffset * 0.55f)
     drawRoundRect(
-        color = Color.Black.copy(alpha = 0.15f),
-        topLeft = Offset(left, top + 6.dp.toPx()),
+        color = Color.Black.copy(alpha = 0.11f),
+        topLeft = Offset(left, top + farShadowOffset),
+        size = Size(folderSize, folderSize),
+        cornerRadius = CornerRadius(corner, corner),
+    )
+    drawRoundRect(
+        color = Color.Black.copy(alpha = 0.23f),
+        topLeft = Offset(left, top + nearShadowOffset),
         size = Size(folderSize, folderSize),
         cornerRadius = CornerRadius(corner, corner),
     )

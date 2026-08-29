@@ -41,8 +41,9 @@ fun IosFolderIcon(
 ) {
     val shape = iosIconShape(size)
     val scale by animateFloatAsState(
-        targetValue = if (highlighted) 1.09f else 1f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 620f),
+        // セル全体のtarget拡大と組み合わせ、合成後がおよそ1.12倍に収まる値。
+        targetValue = if (highlighted) 1.05f else 1f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 520f),
         label = "iosFolderTargetScale",
     )
     val borderColor by animateColorAsState(
