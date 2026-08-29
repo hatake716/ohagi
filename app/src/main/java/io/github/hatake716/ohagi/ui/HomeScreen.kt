@@ -30,7 +30,6 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Splitscreen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
@@ -111,16 +110,13 @@ private sealed interface PickTarget {
     data class DockSlot(val slot: Int) : PickTarget
     data class FolderAdd(val location: FolderLocation) : PickTarget
     data class FolderCreate(val location: FolderLocation) : PickTarget
-    /** 分割で開く 1 つ目を選ぶ(選ぶと [SplitSecond] に進む)。 */
-    data object SplitFirst : PickTarget
-    /** 分割で開く 2 つ目を選ぶ(1 つ目は [first])。 */
-    data class SplitSecond(val first: AppRef) : PickTarget
 }
 
 @Composable
 fun HomeScreen(
     homeEvents: Flow<Unit>,
     onRequestWidget: (AppWidgetProviderInfo) -> Unit,
+    onLaunchApp: (AppRef) -> Unit,
 ) {
     val graph = LocalGraph.current
     val context = LocalContext.current
@@ -155,19 +151,7 @@ fun HomeScreen(
     /** 単体でフルスクリーン起動する。 */
     fun openApp(app: AppRef) {
         overlay = Overlay.None
-        LaunchUtils.launch(context, app)
-    }
-
-    /**
-     * 2 アプリを OS 分割画面(split-screen)で開く。
-     * ohagi は HOME ランチャーのため「1 つ目を開く→ohagi に戻る→2 つ目を開く」という
-     * 順次操作では、戻る時点で必ず ON_RESUME を挟むため 1 つ目の記憶を保てない。
-     * よって split は「分割で開く」導線で 1 つの前面セッション内に 2 アプリを選び、
-     * まとめて起動する明示方式に一本化している。
-     */
-    fun openSplit(first: AppRef, second: AppRef) {
-        overlay = Overlay.None
-        scope.launch { LaunchUtils.launchSplit(context, first, second) }
+        onLaunchApp(app)
     }
 
     // ---- 公式 Compose Drag and Drop ----
@@ -757,9 +741,6 @@ fun HomeScreen(
                 page == appLibraryPage -> AppDrawer(
                     apps = apps,
                     onLaunch = { app -> openApp(app.ref) },
-                    onAddToWorkspace = { app ->
-                        overlay = Overlay.Picker(PickTarget.SplitSecond(app.ref))
-                    },
                     onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
                     onAppInfo = { app ->
                         overlay = Overlay.None
@@ -818,7 +799,9 @@ fun HomeScreen(
                 onLauncherTap = {
                     scope.launch { pagerState.animateScrollToPage(appLibraryPage) }
                 },
-                onLauncherLongPress = { overlay = Overlay.Picker(PickTarget.SplitFirst) },
+                onLauncherLongPress = {
+                    scope.launch { pagerState.animateScrollToPage(appLibraryPage) }
+                },
                 onDrop = ::routeDropOnDock,
                 canStack = ::canStackOnDock,
                 onDragMoved = ::updateDragPosition,
@@ -857,9 +840,6 @@ fun HomeScreen(
                                 overlay = Overlay.Picker(
                                     PickTarget.FolderCreate(FolderLocation.Home(current.index)),
                                 )
-                            },
-                            MenuEntry(stringResource(R.string.menu_split_open), Icons.Rounded.Splitscreen) {
-                                overlay = Overlay.Picker(PickTarget.SplitSecond(app))
                             },
                             MenuEntry(stringResource(R.string.action_app_info), Icons.Rounded.Info) {
                                 LaunchUtils.openAppInfo(context, app.packageName)
@@ -1042,13 +1022,9 @@ fun HomeScreen(
             val excluded = when (target) {
                 is PickTarget.FolderAdd -> appsAt(target.location).toSet()
                 is PickTarget.FolderCreate -> appsAt(target.location).toSet()
-                // 分割の 2 つ目に 1 つ目と同じアプリは選べない
-                is PickTarget.SplitSecond -> setOf(target.first)
                 else -> emptySet()
             }
             val pickerTitle = when (target) {
-                is PickTarget.SplitFirst -> stringResource(R.string.picker_split_first_title)
-                is PickTarget.SplitSecond -> stringResource(R.string.picker_split_second_title)
                 is PickTarget.FolderAdd -> stringResource(R.string.folder_add_apps)
                 is PickTarget.FolderCreate -> stringResource(R.string.folder_create_with_apps)
                 else -> stringResource(R.string.picker_title)
@@ -1062,13 +1038,6 @@ fun HomeScreen(
                 onConfirm = { picked ->
                     val first = picked.firstOrNull()
                     when (target) {
-                        // openApp / openSplit は内部で overlay を閉じる
-                        // 1 つ目を選んだら 2 つ目の選択へ進む
-                        is PickTarget.SplitFirst ->
-                            overlay = if (first != null) {
-                                Overlay.Picker(PickTarget.SplitSecond(first.ref))
-                            } else Overlay.None
-                        is PickTarget.SplitSecond -> first?.let { openSplit(target.first, it.ref) }
                         is PickTarget.DockSlot -> {
                             first?.let { graph.layoutRepository.addAppToDockSlot(target.slot, it.ref) }
                             overlay = Overlay.None

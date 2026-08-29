@@ -52,7 +52,7 @@ import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
 /**
- * 分割起動、Dock割り当て、フォルダ追加で共用する自動カテゴリー式ピッカー。
+ * Dock割り当てとフォルダ追加で共用する自動カテゴリー式ピッカー。
  * 単一選択はタップで即確定し、複数選択はカテゴリーを跨いで選択状態を保持する。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -198,7 +198,7 @@ fun AppPickerSheet(
 }
 
 @Composable
-private fun PickerAppCell(
+internal fun PickerAppCell(
     app: AppInfo,
     selected: Boolean,
     onClick: () -> Unit,

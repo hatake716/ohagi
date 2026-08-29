@@ -300,7 +300,7 @@ private fun DockSlot(
     }
 }
 
-/** 中央ランチャーボタン。タップでドロワー、長押しで分割起動設定。 */
+/** 中央ランチャーボタン。タップ／長押しのどちらでもAppライブラリを開く。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LauncherButton(

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Dock
@@ -72,7 +71,6 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 fun AppDrawer(
     apps: List<AppInfo>,
     onLaunch: (AppInfo) -> Unit,
-    onAddToWorkspace: (AppInfo) -> Unit,
     onAddToDock: (AppInfo) -> Unit,
     onAppInfo: (AppInfo) -> Unit,
     onUninstall: (AppInfo) -> Unit,
@@ -172,9 +170,6 @@ fun AppDrawer(
     menuTarget?.let { app ->
         MenuSheet(
             entries = listOf(
-                MenuEntry(stringResource(R.string.drawer_add_to_workspace), Icons.Rounded.Add) {
-                    onAddToWorkspace(app)
-                },
                 MenuEntry(stringResource(R.string.drawer_add_to_dock), Icons.Rounded.Dock) {
                     onAddToDock(app)
                 },

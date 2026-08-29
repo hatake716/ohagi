@@ -8,4 +8,16 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
+
+    <!-- 通知から開く2つ目選択画面。選択後は不透明なsource activityとして分割遷移に
+         参加し、OSの分割完了後にActivity側から終了する。 -->
+    <style name="Theme.Ohagi.SplitLaunch" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowIsFloating">false</item>
+    </style>
 </resources>

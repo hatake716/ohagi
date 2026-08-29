@@ -1,19 +1,27 @@
 package io.github.hatake716.ohagi
 
+import android.Manifest
 import android.app.Activity
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.HomeScreen
 import io.github.hatake716.ohagi.ui.theme.OhagiTheme
+import io.github.hatake716.ohagi.util.LaunchUtils
+import io.github.hatake716.ohagi.util.SplitLaunchNotification
 import kotlinx.coroutines.flow.MutableSharedFlow
 
 class MainActivity : ComponentActivity() {
@@ -22,18 +30,29 @@ class MainActivity : ComponentActivity() {
     private val homeEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private var pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
     private var pendingWidgetProvider: AppWidgetProviderInfo? = null
+    private var pendingAppLaunch: AppRef? = null
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val app = pendingAppLaunch ?: return@registerForActivityResult
+        pendingAppLaunch = null
+        launchAppWithSplitNotification(app, canNotify = granted)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val graph = (application as OhagiApp).graph
         restorePendingWidget(savedInstanceState, graph)
+        restorePendingAppLaunch(savedInstanceState)
         setContent {
             OhagiTheme {
                 CompositionLocalProvider(LocalGraph provides graph) {
                     HomeScreen(
                         homeEvents = homeEvents,
                         onRequestWidget = ::requestWidget,
+                        onLaunchApp = ::requestAppLaunch,
                     )
                 }
             }
@@ -65,6 +84,10 @@ class MainActivity : ComponentActivity() {
         outState.putInt(STATE_PENDING_WIDGET_ID, pendingWidgetId)
         pendingWidgetProvider?.provider?.let { provider ->
             outState.putString(STATE_PENDING_WIDGET_PROVIDER, provider.flattenToString())
+        }
+        pendingAppLaunch?.let { app ->
+            outState.putString(STATE_PENDING_APP_PACKAGE, app.packageName)
+            outState.putString(STATE_PENDING_APP_CLASS, app.className)
         }
     }
 
@@ -165,6 +188,38 @@ class MainActivity : ComponentActivity() {
         pendingWidgetProvider = null
     }
 
+    /**
+     * ホーム／Dock／フォルダ／Appライブラリからの通常起動を一元化する。
+     * 通知権限が未決定なら、このユーザー操作の文脈で一度だけ確認してから起動する。
+     */
+    private fun requestAppLaunch(app: AppRef) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            val permissionPrefs = getSharedPreferences(
+                PREFS_NOTIFICATION_PERMISSION,
+                MODE_PRIVATE,
+            )
+            if (permissionPrefs.getBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, false)) {
+                launchAppWithSplitNotification(app, canNotify = false)
+                return
+            }
+            permissionPrefs.edit { putBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, true) }
+            pendingAppLaunch = app
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        launchAppWithSplitNotification(app, canNotify = true)
+    }
+
+    private fun launchAppWithSplitNotification(app: AppRef, canNotify: Boolean) {
+        val notificationPosted = canNotify && SplitLaunchNotification.post(this, app)
+        if (!LaunchUtils.launch(this, app) && notificationPosted) {
+            SplitLaunchNotification.cancel(this)
+        }
+    }
+
     private fun restorePendingWidget(savedState: Bundle?, graph: Graph) {
         val appWidgetId = savedState?.getInt(
             STATE_PENDING_WIDGET_ID,
@@ -180,10 +235,20 @@ class MainActivity : ComponentActivity() {
         if (pendingWidgetProvider == null) cancelPendingWidget()
     }
 
+    private fun restorePendingAppLaunch(savedState: Bundle?) {
+        val packageName = savedState?.getString(STATE_PENDING_APP_PACKAGE) ?: return
+        val className = savedState.getString(STATE_PENDING_APP_CLASS) ?: return
+        pendingAppLaunch = AppRef(packageName, className)
+    }
+
     private companion object {
         const val REQUEST_BIND_WIDGET = 7160
         const val REQUEST_CONFIGURE_WIDGET = 7161
         const val STATE_PENDING_WIDGET_ID = "pending_widget_id"
         const val STATE_PENDING_WIDGET_PROVIDER = "pending_widget_provider"
+        const val STATE_PENDING_APP_PACKAGE = "pending_app_package"
+        const val STATE_PENDING_APP_CLASS = "pending_app_class"
+        const val PREFS_NOTIFICATION_PERMISSION = "notification_permission"
+        const val KEY_NOTIFICATION_PERMISSION_ASKED = "asked"
     }
 }

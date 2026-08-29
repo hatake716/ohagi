@@ -14,6 +14,8 @@
     </queries>
 
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- 通常起動したアプリに追加する2つ目を、通知から選ぶために使用する。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- ランチャー内でAndroid標準ウィジェットをホストする。実際のバインドは
          ACTION_APPWIDGET_BINDでユーザー確認を受けてから行う。 -->
     <uses-permission
@@ -50,5 +52,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 通知から2つ目を選び、分割起動のActivity起点にもなる履歴非表示画面。 -->
+        <activity
+            android:name=".SplitLaunchActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density"
+            android:resizeableActivity="true"
+            android:taskAffinity="io.github.hatake716.ohagi.split"
+            android:theme="@style/Theme.Ohagi.SplitLaunch" />
     </application>
 </manifest>

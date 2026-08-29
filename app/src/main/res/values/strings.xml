@@ -18,16 +18,14 @@
     <string name="action_more">その他の操作</string>
 
     <!-- ホーム/ドロワー共通 -->
-    <string name="menu_split_open">分割で 2 アプリを開く</string>
     <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
 
     <!-- ドロワー/ピッカー -->
     <string name="drawer_title">Appライブラリ</string>
     <string name="picker_title">アプリを選択</string>
-    <string name="picker_split_first_title">分割で開く 1 つ目のアプリ</string>
-    <string name="picker_split_second_title">分割で開くもう 1 つのアプリ</string>
+    <string name="picker_split_second_title">2つ目のアプリを選択</string>
+    <string name="picker_split_first_app">1つ目: %1$s</string>
     <string name="search_apps_hint">アプリを検索</string>
-    <string name="drawer_add_to_workspace">分割で開く</string>
     <string name="drawer_add_to_dock">ドックに追加</string>
 
     <!-- 自動カテゴリー -->
@@ -74,7 +72,13 @@
 
     <!-- トースト/エラー -->
     <string name="toast_launch_failed">アプリを起動できませんでした</string>
-    <string name="toast_split_unsupported">この端末では分割起動がサポートされていない可能性があります</string>
     <string name="toast_dock_full">ドックに空きスロットがありません</string>
     <string name="toast_home_pages_full">ホーム画面は最大%1$dページです</string>
+
+    <!-- 通知から2つ目を選ぶ分割起動 -->
+    <string name="split_notification_channel_name">画面分割</string>
+    <string name="split_notification_channel_description">通常起動したアプリに、2つ目のアプリを追加するための通知</string>
+    <string name="split_notification_title">ohagi</string>
+    <string name="split_notification_text">%1$sと分割する2つ目のアプリを選択できます</string>
+    <string name="split_notification_action">ohagi</string>
 </resources>
