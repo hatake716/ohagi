@@ -2,8 +2,6 @@ package io.github.hatake716.ohagi.ui.drawer
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,6 +48,7 @@ import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppCategory
 import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.CategorizedAppBrowser
 import io.github.hatake716.ohagi.ui.common.IosGlassIconButton
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
@@ -97,10 +96,6 @@ fun AppDrawer(
         modifier = modifier
             .fillMaxSize()
             .background(Ink.copy(alpha = 0.64f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) {}
             // ステータスバー/ナビバー/IME/ディスプレイカットアウトすべてを避ける
             .safeDrawingPadding()
     ) {
@@ -238,7 +233,7 @@ private fun DrawerCell(
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            AppIcon(app = app.ref, size = 56.dp)
+            AppIconImage(icon = icon, size = 56.dp)
             Spacer(Modifier.height(6.dp))
             // iOS ホーム風: アイコン下に最大 2 行のラベル。半透明背景で読めるよう白系。
             Text(

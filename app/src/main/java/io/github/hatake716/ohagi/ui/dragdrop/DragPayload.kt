@@ -11,11 +11,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
@@ -27,6 +30,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.draganddrop.mimeTypes
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import io.github.hatake716.ohagi.data.AppRef
+import io.github.hatake716.ohagi.data.FolderLocation
 import io.github.hatake716.ohagi.ui.common.IOS_ICON_CORNER_RATIO
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -48,6 +52,22 @@ sealed interface DragPayload {
     @Serializable
     @SerialName("drawer")
     data class FromDrawer(val app: AppRef) : DragPayload
+
+    @Serializable
+    @SerialName("home-folder-app")
+    data class FromHomeFolder(
+        val index: Int,
+        val appIndex: Int,
+        val app: AppRef,
+    ) : DragPayload
+
+    @Serializable
+    @SerialName("dock-folder-app")
+    data class FromDockFolder(
+        val slot: Int,
+        val appIndex: Int,
+        val app: AppRef,
+    ) : DragPayload
 }
 
 const val OHAGI_DND_MIME = "application/vnd.ohagi.dragitem"
@@ -81,6 +101,14 @@ fun DragAndDropEvent.isOhagiDrag(): Boolean = OHAGI_DND_MIME in mimeTypes()
 
 fun DragAndDropEvent.isOhagiRemovableDrag(): Boolean =
     OHAGI_REMOVABLE_DND_MIME in mimeTypes()
+
+fun DragPayload.isRemovable(): Boolean = this !is DragPayload.FromDrawer
+
+fun DragPayload.folderLocationOrNull(): FolderLocation? = when (this) {
+    is DragPayload.FromHomeFolder -> FolderLocation.Home(index)
+    is DragPayload.FromDockFolder -> FolderLocation.Dock(slot)
+    else -> null
+}
 
 fun DragAndDropEvent.readOhagiPayload(): DragPayload? {
     if (!isOhagiDrag()) return null
@@ -157,7 +185,8 @@ fun rememberOhagiDropTarget(
 
             override fun onDrop(event: DragAndDropEvent): Boolean {
                 val payload = event.readOhagiPayload() ?: return false
-                return currentDrop.value(payload, event.positionInOhagiRoot())
+                val position = event.positionInOhagiRoot()
+                return currentDrop.value(payload, position)
             }
         }
     }
@@ -172,11 +201,18 @@ fun rememberOhagiDropTarget(
 fun Modifier.ohagiDragSource(
     payload: DragPayload,
     icon: ImageBitmap?,
+    folderIcons: List<ImageBitmap?> = emptyList(),
     onTap: () -> Unit,
     onPressChanged: (Boolean) -> Unit = {},
     onDragStarted: () -> Unit = {},
 ): Modifier = dragAndDropSource(
-    drawDragDecoration = { drawOhagiDragDecoration(icon) },
+    drawDragDecoration = {
+        if (folderIcons.isEmpty()) {
+            drawOhagiDragDecoration(icon)
+        } else {
+            drawOhagiFolderDragDecoration(folderIcons)
+        }
+    },
     block = {
         detectTapGestures(
             onPress = {
@@ -239,6 +275,78 @@ private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
         color = Color.White.copy(alpha = 0.20f),
         topLeft = Offset(left, top),
         size = Size(iconSize, iconSize),
+        cornerRadius = CornerRadius(corner, corner),
+        style = Stroke(width = 0.75.dp.toPx()),
+    )
+}
+
+/** フォルダ本体を移動中も、単体アプリではなく3×3プレビューの影を表示する。 */
+private fun DrawScope.drawOhagiFolderDragDecoration(icons: List<ImageBitmap?>) {
+    val folderSize = min(size.minDimension, 72.dp.toPx())
+    val left = (size.width - folderSize) / 2f
+    val top = (size.height - folderSize) / 2f
+    val corner = folderSize * IOS_ICON_CORNER_RATIO
+    val miniSize = folderSize * 0.205f
+    val spacing = folderSize * 0.055f
+    val contentSize = miniSize * 3f + spacing * 2f
+    val contentLeft = left + (folderSize - contentSize) / 2f
+    val contentTop = top + (folderSize - contentSize) / 2f
+
+    drawRoundRect(
+        color = Color.Black.copy(alpha = 0.15f),
+        topLeft = Offset(left, top + 6.dp.toPx()),
+        size = Size(folderSize, folderSize),
+        cornerRadius = CornerRadius(corner, corner),
+    )
+    drawRoundRect(
+        color = Color(0xCC55575E),
+        topLeft = Offset(left, top),
+        size = Size(folderSize, folderSize),
+        cornerRadius = CornerRadius(corner, corner),
+    )
+
+    repeat(9) { index ->
+        val row = index / 3
+        val column = index % 3
+        val miniLeft = contentLeft + column * (miniSize + spacing)
+        val miniTop = contentTop + row * (miniSize + spacing)
+        val miniCorner = miniSize * IOS_ICON_CORNER_RATIO
+        val bitmap = icons.getOrNull(index)
+        if (bitmap == null) {
+            if (index < icons.size) {
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.12f),
+                    topLeft = Offset(miniLeft, miniTop),
+                    size = Size(miniSize, miniSize),
+                    cornerRadius = CornerRadius(miniCorner, miniCorner),
+                )
+            }
+        } else {
+            val clip = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        left = miniLeft,
+                        top = miniTop,
+                        right = miniLeft + miniSize,
+                        bottom = miniTop + miniSize,
+                        cornerRadius = CornerRadius(miniCorner, miniCorner),
+                    ),
+                )
+            }
+            clipPath(clip) {
+                drawImage(
+                    image = bitmap,
+                    dstOffset = IntOffset(miniLeft.roundToInt(), miniTop.roundToInt()),
+                    dstSize = IntSize(miniSize.roundToInt(), miniSize.roundToInt()),
+                )
+            }
+        }
+    }
+
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.25f),
+        topLeft = Offset(left, top),
+        size = Size(folderSize, folderSize),
         cornerRadius = CornerRadius(corner, corner),
         style = Stroke(width = 0.75.dp.toPx()),
     )

@@ -1,27 +1,32 @@
 package io.github.hatake716.ohagi.data
 
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import android.util.LruCache
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.graphics.drawable.toBitmap
+import androidx.core.graphics.createBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.text.Collator
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /** ドロワー表示用のアプリ情報 */
 data class AppInfo(
@@ -30,27 +35,66 @@ data class AppInfo(
     val category: AppCategory,
 )
 
+private data class CachedIcon(
+    val image: ImageBitmap,
+    val sizeKb: Int,
+)
+
 /**
  * インストール済みアプリの一覧・ラベル・アイコンを提供するリポジトリ。
  * パッケージの追加/削除/更新を監視して一覧を更新する。
  */
 class AppRepository(private val context: Context) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pm: PackageManager = context.packageManager
+    private val refreshRequests = Channel<Unit>(Channel.CONFLATED)
 
     private val _apps = MutableStateFlow<List<AppInfo>>(emptyList())
     val apps: StateFlow<List<AppInfo>> = _apps
 
     /** アイコンキャッシュの世代。パッケージ変更で増え、表示中アイコンの再読込を促す。 */
-    private val _iconVersion = MutableStateFlow(0)
-    val iconVersion: StateFlow<Int> = _iconVersion
+    private val _iconVersion = mutableIntStateOf(0)
+    val iconVersion: Int get() = _iconVersion.intValue
 
-    private val refreshMutex = Mutex()
-
-    private val iconCache = LruCache<String, ImageBitmap>(160)
+    private val iconCacheMaxKb = if (
+        context.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true
+    ) {
+        LOW_RAM_ICON_CACHE_KB
+    } else {
+        DEFAULT_ICON_CACHE_KB
+    }
+    private val iconCache = object : LruCache<String, CachedIcon>(iconCacheMaxKb) {
+        override fun sizeOf(key: String, value: CachedIcon): Int = value.sizeKb
+    }
+    private val iconLoadLocks = ConcurrentHashMap<String, Any>()
     @Volatile
     private var labelIndex: Map<AppRef, String> = emptyMap()
+    @Volatile
+    private var packageLabelIndex: Map<String, String> = emptyMap()
+    @Volatile
+    private var lastRefreshElapsedMs = 0L
+    private var watchingPackages = false
+
+    init {
+        // 連続するonResumeやパッケージ通知を1件に畳み、重いPackageManager走査を直列化する。
+        scope.launch {
+            for (ignored in refreshRequests) {
+                runCatching(::queryLauncherActivities)
+                    .onSuccess { list ->
+                        labelIndex = list.associate { it.ref to it.label }
+                        packageLabelIndex = list
+                            .distinctBy { it.ref.packageName }
+                            .associate { it.ref.packageName to it.label }
+                        _apps.value = list
+                        lastRefreshElapsedMs = SystemClock.elapsedRealtime()
+                    }
+                    .onFailure { error ->
+                        Log.w(TAG, "ランチャーアプリ一覧の更新に失敗しました", error)
+                    }
+            }
+        }
+    }
 
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -60,7 +104,7 @@ class AppRepository(private val context: Context) {
                         .filter { it.startsWith("$pkg/") }
                         .forEach { iconCache.remove(it) }
                 }
-                _iconVersion.value++
+                _iconVersion.intValue++
             }
             // アプリ更新中の REMOVED/ADDED(replacing) では再クエリしない。
             // 更新途中の一時的な非表示状態を検出してレイアウトを誤って掃除するのを防ぐ。
@@ -71,6 +115,8 @@ class AppRepository(private val context: Context) {
     }
 
     fun startWatching() {
+        if (watchingPackages) return
+        watchingPackages = true
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REMOVED)
@@ -88,13 +134,14 @@ class AppRepository(private val context: Context) {
     }
 
     fun refresh() {
-        scope.launch {
-            // 直列化して、古いクエリ結果が新しい結果を上書きするレースを防ぐ
-            refreshMutex.withLock {
-                val list = queryLauncherActivities()
-                labelIndex = list.associate { it.ref to it.label }
-                _apps.value = list
-            }
+        refreshRequests.trySend(Unit)
+    }
+
+    /** アプリから戻るたびの全件走査を避けつつ、長時間表示後は一覧を再同期する。 */
+    fun refreshIfStale(maxAgeMs: Long = FOREGROUND_REFRESH_INTERVAL_MS) {
+        val last = lastRefreshElapsedMs
+        if (last == 0L || SystemClock.elapsedRealtime() - last >= maxAgeMs) {
+            refresh()
         }
     }
 
@@ -139,29 +186,72 @@ class AppRepository(private val context: Context) {
 
     fun labelOf(ref: AppRef): String =
         labelIndex[ref]
-            ?: labelIndex.entries.firstOrNull { it.key.packageName == ref.packageName }?.value
+            ?: packageLabelIndex[ref.packageName]
             ?: ref.packageName.substringAfterLast('.')
 
     /** アイコンを読み込む(呼び出しスレッドで実行されるため、UI からは IO ディスパッチャで呼ぶこと)。 */
-    fun iconOf(ref: AppRef): ImageBitmap? {
-        val key = "${ref.packageName}/${ref.className}"
-        synchronized(iconCache) { iconCache.get(key) }?.let { return it }
-        val drawable: Drawable = try {
-            pm.getActivityIcon(ComponentName(ref.packageName, ref.className))
-        } catch (_: Exception) {
-            try {
-                pm.getApplicationIcon(ref.packageName)
-            } catch (_: Exception) {
-                return null
-            }
-        }
+    fun iconOf(ref: AppRef, requestedSizePx: Int = LARGE_ICON_SIZE_PX): ImageBitmap? {
+        val renderSizePx = iconRenderSize(requestedSizePx)
+        val key = "${ref.packageName}/${ref.className}@$renderSizePx"
+        synchronized(iconCache) { iconCache.get(key)?.image }?.let { return it }
+
+        // 同じアイコンは表示本体・D&D装飾・フォルダプレビューから同時要求される。
+        // key単位で二重生成を止め、別アプリの読み込みは並行できるようにする。
+        val loadLock = iconLoadLocks.computeIfAbsent(key) { Any() }
         return try {
-            val bitmap = renderRoundedIcon(drawable).asImageBitmap()
-            synchronized(iconCache) { iconCache.put(key, bitmap) }
-            bitmap
-        } catch (_: Exception) {
-            null
+            synchronized(loadLock) load@{
+                synchronized(iconCache) { iconCache.get(key)?.image }?.let { return@load it }
+                val versionAtStart = iconVersion
+                val drawable: Drawable = try {
+                    pm.getActivityIcon(ComponentName(ref.packageName, ref.className))
+                } catch (_: Exception) {
+                    try {
+                        pm.getApplicationIcon(ref.packageName)
+                    } catch (_: Exception) {
+                        return@load null
+                    }
+                }
+                try {
+                    val bitmap = renderRoundedIcon(drawable, renderSizePx).asImageBitmap()
+                    // 読み込み中に対象パッケージ群が更新された場合は古い画像を保持しない。
+                    if (iconVersion == versionAtStart) {
+                        synchronized(iconCache) {
+                            iconCache.put(
+                                key,
+                                CachedIcon(
+                                    image = bitmap,
+                                    sizeKb = renderSizePx * renderSizePx * 4 / 1024,
+                                ),
+                            )
+                        }
+                    }
+                    bitmap
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        } finally {
+            iconLoadLocks.remove(key, loadLock)
         }
+    }
+
+    /** システムのメモリ圧迫通知に合わせ、再生成可能なBitmapだけを段階的に解放する。 */
+    @Suppress("DEPRECATION")
+    fun trimMemory(level: Int) {
+        val targetKb = when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> 0
+            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> BACKGROUND_ICON_CACHE_KB
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> BACKGROUND_ICON_CACHE_KB
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> RUNNING_LOW_ICON_CACHE_KB
+            else -> return
+        }.coerceAtMost(iconCacheMaxKb)
+        synchronized(iconCache) {
+            if (targetKb == 0) iconCache.evictAll() else iconCache.trimToSize(targetKb)
+        }
+    }
+
+    fun clearIconCache() {
+        synchronized(iconCache) { iconCache.evictAll() }
     }
 
     /**
@@ -172,11 +262,11 @@ class AppRepository(private val context: Context) {
      * 描き、円形マスクを回避して統一された角丸にする。
      * レガシー(非アダプティブ)アイコンは元のビットマップを角丸クリップで整える。
      */
-    private fun renderRoundedIcon(drawable: Drawable): android.graphics.Bitmap {
-        val size = ICON_SIZE_PX
-        val bitmap = android.graphics.Bitmap.createBitmap(
-            size, size, android.graphics.Bitmap.Config.ARGB_8888,
-        )
+    private fun renderRoundedIcon(
+        drawable: Drawable,
+        size: Int,
+    ): android.graphics.Bitmap {
+        val bitmap = createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
         val radius = size * ICON_CORNER_RATIO
         val clip = android.graphics.Path().apply {
@@ -187,9 +277,7 @@ class AppRepository(private val context: Context) {
         }
         canvas.clipPath(clip)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            drawable is android.graphics.drawable.AdaptiveIconDrawable
-        ) {
+        if (drawable is android.graphics.drawable.AdaptiveIconDrawable) {
             // アダプティブアイコンの前景/背景は本来セーフゾーンより 1/9 ずつ外へはみ出す。
             // キャンバスより一回り大きい bounds を与えて中央のセーフゾーンが枠に収まるようにする。
             val inset = (size / 9f).toInt()
@@ -203,9 +291,23 @@ class AppRepository(private val context: Context) {
         return bitmap
     }
 
+    private fun iconRenderSize(requestedSizePx: Int): Int = when {
+        requestedSizePx <= SMALL_ICON_SIZE_PX -> SMALL_ICON_SIZE_PX
+        requestedSizePx <= MEDIUM_ICON_SIZE_PX -> MEDIUM_ICON_SIZE_PX
+        else -> LARGE_ICON_SIZE_PX
+    }
+
     private companion object {
-        const val ICON_SIZE_PX = 192
+        const val SMALL_ICON_SIZE_PX = 96
+        const val MEDIUM_ICON_SIZE_PX = 144
+        const val LARGE_ICON_SIZE_PX = 192
+        const val DEFAULT_ICON_CACHE_KB = 6 * 1024
+        const val LOW_RAM_ICON_CACHE_KB = 3 * 1024
+        const val RUNNING_LOW_ICON_CACHE_KB = 2 * 1024
+        const val BACKGROUND_ICON_CACHE_KB = 1 * 1024
+        const val FOREGROUND_REFRESH_INTERVAL_MS = 15_000L
         // AppIcon 側の角丸比率(size*0.2237f)と揃える。
         const val ICON_CORNER_RATIO = 0.2237f
+        const val TAG = "AppRepository"
     }
 }

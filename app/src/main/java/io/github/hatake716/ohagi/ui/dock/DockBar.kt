@@ -21,10 +21,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,24 +34,29 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
+import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
-import io.github.hatake716.ohagi.ui.common.AppIcon
+import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
+import io.github.hatake716.ohagi.ui.common.IosFolderIcon
 import io.github.hatake716.ohagi.ui.common.animateIosPressScale
 import io.github.hatake716.ohagi.ui.common.iosIconShape
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
+import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
@@ -61,7 +64,6 @@ import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
 import io.github.hatake716.ohagi.ui.theme.Azuki
 import io.github.hatake716.ohagi.ui.theme.AzukiDeep
 import io.github.hatake716.ohagi.ui.theme.Kome
-import io.github.hatake716.ohagi.ui.theme.PanelScrimLight
 import io.github.hatake716.ohagi.ui.theme.TileBorder
 
 /**
@@ -72,11 +74,13 @@ import io.github.hatake716.ohagi.ui.theme.TileBorder
 fun DockBar(
     dock: List<DockItem?>,
     activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     onSlotTap: (Int) -> Unit,
     onSlotMenu: (Int) -> Unit,
     onLauncherTap: () -> Unit,
     onLauncherLongPress: () -> Unit,
-    onDrop: (Int, DragPayload, Offset) -> Boolean,
+    onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (Int, DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
     onDragSessionStarted: (DragPayload) -> Unit,
     onDragSessionEnded: () -> Unit,
@@ -108,10 +112,15 @@ fun DockBar(
             DockSlot(
                 slot = slot,
                 item = dock.getOrNull(slot),
+                activeDrag = activeDrag,
+                labelOf = labelOf,
                 isDragging = activeDrag == DragPayload.FromDock(slot),
                 onTap = { onSlotTap(slot) },
                 onMenu = { onSlotMenu(slot) },
-                onDrop = { payload, position -> onDrop(slot, payload, position) },
+                onDrop = { payload, position, stack ->
+                    onDrop(slot, payload, position, stack)
+                },
+                canStack = { payload -> canStack(slot, payload) },
                 onDragMoved = onDragMoved,
                 onDragSessionStarted = onDragSessionStarted,
                 onDragSessionEnded = onDragSessionEnded,
@@ -126,10 +135,15 @@ fun DockBar(
             DockSlot(
                 slot = slot,
                 item = dock.getOrNull(slot),
+                activeDrag = activeDrag,
+                labelOf = labelOf,
                 isDragging = activeDrag == DragPayload.FromDock(slot),
                 onTap = { onSlotTap(slot) },
                 onMenu = { onSlotMenu(slot) },
-                onDrop = { payload, position -> onDrop(slot, payload, position) },
+                onDrop = { payload, position, stack ->
+                    onDrop(slot, payload, position, stack)
+                },
+                canStack = { payload -> canStack(slot, payload) },
                 onDragMoved = onDragMoved,
                 onDragSessionStarted = onDragSessionStarted,
                 onDragSessionEnded = onDragSessionEnded,
@@ -145,19 +159,20 @@ fun DockBar(
 private fun DockSlot(
     slot: Int,
     item: DockItem?,
+    activeDrag: DragPayload?,
+    labelOf: (AppRef) -> String,
     isDragging: Boolean,
     onTap: () -> Unit,
     onMenu: () -> Unit,
-    onDrop: (DragPayload, Offset) -> Boolean,
+    onDrop: (DragPayload, Offset, Boolean) -> Boolean,
+    canStack: (DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
     onDragSessionStarted: (DragPayload) -> Unit,
     onDragSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val graph = LocalGraph.current
-    val apps by graph.appRepository.apps.collectAsState()
     val description = when (item) {
-        is DockItem.DockApp -> remember(item, apps) { graph.appRepository.labelOf(item.app) }
+        is DockItem.DockApp -> labelOf(item.app)
         is DockItem.DockFolder -> item.name
         null -> stringResource(R.string.dock_slot_empty)
     }
@@ -176,25 +191,46 @@ private fun DockSlot(
         null -> null
     }
     val dragIcon by rememberAppIconBitmap(dragIconApp)
+    val folderDragIcons by rememberAppIconBitmaps(
+        (item as? DockItem.DockFolder)?.apps.orEmpty(),
+    )
 
     var dropHovered by remember { mutableStateOf(false) }
+    var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
+    var folderReady by remember { mutableStateOf(false) }
+    val stackCandidate = activeDrag?.let(canStack) == true
     val hoverColor by animateColorAsState(
-        targetValue = if (dropHovered) Azuki.copy(alpha = 0.22f) else Color.Transparent,
+        targetValue = when {
+            folderReady -> Color.White.copy(alpha = 0.17f)
+            dropHovered -> Azuki.copy(alpha = 0.22f)
+            else -> Color.Transparent
+        },
         animationSpec = tween(durationMillis = 120),
         label = "dockDropHover",
     )
     val dropTarget = rememberOhagiDropTarget(
         onStarted = onDragSessionStarted,
         onEntered = { dropHovered = true },
-        onMoved = onDragMoved,
-        onExited = { dropHovered = false },
+        onMoved = { position ->
+            folderReady = stackCandidate &&
+                folderTargetBounds?.contains(position) == true
+            onDragMoved(position)
+        },
+        onExited = {
+            dropHovered = false
+            folderReady = false
+        },
         onEnded = {
             dropHovered = false
+            folderReady = false
             onDragSessionEnded()
         },
         onDrop = { dropped, position ->
             dropHovered = false
-            onDrop(dropped, position)
+            val stack = canStack(dropped) &&
+                folderTargetBounds?.contains(position) == true
+            folderReady = false
+            onDrop(dropped, position, stack)
         },
     )
 
@@ -204,6 +240,7 @@ private fun DockSlot(
         Modifier.ohagiDragSource(
             payload = payload,
             icon = dragIcon,
+            folderIcons = folderDragIcons,
             onTap = onTap,
             onPressChanged = { pressed = it },
             onDragStarted = {
@@ -229,12 +266,18 @@ private fun DockSlot(
                 }
                 .alpha(if (isDragging) 0.20f else 1f)
                 .size(64.dp)
+                .onGloballyPositioned { folderTargetBounds = it.boundsInRoot() }
                 .then(sourceModifier)
                 .semantics { contentDescription = description },
         ) {
             when (item) {
-                is DockItem.DockApp -> AppIcon(app = item.app, size = 52.dp)
-                is DockItem.DockFolder -> FolderPreview(folder = item)
+                is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = 52.dp)
+                is DockItem.DockFolder -> IosFolderIcon(
+                    apps = item.apps,
+                    size = 52.dp,
+                    highlighted = folderReady,
+                    preloadedIcons = folderDragIcons,
+                )
                 null -> Icon(
                     imageVector = Icons.Rounded.Add,
                     contentDescription = null,
@@ -253,39 +296,6 @@ private fun DockSlot(
                     .offset(x = 6.dp, y = (-6).dp),
                 size = 20.dp,
             )
-        }
-    }
-}
-
-/** iOSのフォルダアイコンと同じ3x3ミニグリッド。空フォルダはフォルダアイコン。 */
-@Composable
-private fun FolderPreview(folder: DockItem.DockFolder) {
-    val shape = RoundedCornerShape(14.dp)
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(52.dp)
-            .clip(shape)
-            .background(PanelScrimLight)
-            .border(1.dp, TileBorder, shape),
-    ) {
-        if (folder.apps.isEmpty()) {
-            Icon(
-                imageVector = Icons.Rounded.Folder,
-                contentDescription = null,
-                tint = Kome.copy(alpha = 0.7f),
-                modifier = Modifier.size(24.dp),
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                folder.apps.take(9).chunked(3).forEach { rowApps ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        rowApps.forEach { app ->
-                            AppIcon(app = app, size = 13.dp)
-                        }
-                    }
-                }
-            }
         }
     }
 }

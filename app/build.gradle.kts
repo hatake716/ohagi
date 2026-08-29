@@ -81,5 +81,6 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.datastore)
     implementation(libs.kotlinx.serialization.json)
+    testImplementation(kotlin("test"))
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

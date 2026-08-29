@@ -7,6 +7,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -102,9 +103,10 @@ fun CategorizedAppBrowser(
 
         else -> {
             val groups = remember(apps) {
+                val appsByCategory = apps.groupBy { it.category }
                 AppCategory.entries.mapNotNull { category ->
-                    apps.filter { it.category == category }
-                        .takeIf { it.isNotEmpty() }
+                    appsByCategory[category]
+                        ?.takeIf { it.isNotEmpty() }
                         ?.let { category to it }
                 }
             }
@@ -138,8 +140,7 @@ fun CategorizedAppBrowser(
     }
 }
 
-@Composable
-fun appCategoryTitle(category: AppCategory): String = stringResource(
+fun appCategoryTitleRes(category: AppCategory): Int =
     when (category) {
         AppCategory.SOCIAL -> R.string.category_social
         AppCategory.PRODUCTIVITY_FINANCE -> R.string.category_productivity_finance
@@ -152,8 +153,11 @@ fun appCategoryTitle(category: AppCategory): String = stringResource(
         AppCategory.HEALTH_FITNESS -> R.string.category_health_fitness
         AppCategory.UTILITIES -> R.string.category_utilities
         AppCategory.OTHER -> R.string.category_other
-    },
-)
+    }
+
+@Composable
+fun appCategoryTitle(category: AppCategory): String =
+    stringResource(appCategoryTitleRes(category))
 
 @Composable
 private fun AppGrid(
@@ -230,7 +234,7 @@ private fun CategoryCard(
                 indication = null,
                 onClick = onOpenCategory,
             )
-            .padding(12.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -246,30 +250,49 @@ private fun CategoryCard(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        Spacer(Modifier.height(10.dp))
-        PreviewRow(
-            apps = apps.take(2),
-            selectedApps = selectedApps,
-            onAppClick = onAppClick,
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        Spacer(Modifier.height(6.dp))
+        BoxWithConstraints(
             modifier = Modifier.fillMaxWidth(),
         ) {
-            apps.getOrNull(2)?.let { app ->
-                CategoryPreviewIcon(
-                    app = app,
-                    selected = app.ref in selectedApps,
-                    onClick = { onAppClick(app) },
-                )
-            } ?: PreviewPlaceholder()
-            MiniPreviewCluster(
-                title = title,
-                apps = apps.drop(3).take(4),
-                onClick = onOpenCategory,
+            // iOS App Libraryのカード比率に合わせ、左右端へ押し広げず、
+            // 2個の大アイコンを短い固定間隔で中央にまとめる。
+            // 幅の狭い端末ではカード内に収まるサイズまで自動的に縮小する。
+            val previewIconSize = minOf(
+                CategoryPreviewIconSize,
+                (maxWidth - CategoryPreviewIconGap) / 2,
             )
+            Column {
+                PreviewRow(
+                    apps = apps.take(2),
+                    selectedApps = selectedApps,
+                    onAppClick = onAppClick,
+                    iconSize = previewIconSize,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(
+                        space = CategoryPreviewIconGap,
+                        alignment = Alignment.CenterHorizontally,
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    apps.getOrNull(2)?.let { app ->
+                        CategoryPreviewIcon(
+                            app = app,
+                            selected = app.ref in selectedApps,
+                            onClick = { onAppClick(app) },
+                            size = previewIconSize,
+                        )
+                    } ?: PreviewPlaceholder(previewIconSize)
+                    MiniPreviewCluster(
+                        title = title,
+                        apps = apps.drop(3).take(4),
+                        onClick = onOpenCategory,
+                        size = previewIconSize,
+                    )
+                }
+            }
         }
     }
 }
@@ -279,9 +302,13 @@ private fun PreviewRow(
     apps: List<AppInfo>,
     selectedApps: Set<AppRef>,
     onAppClick: (AppInfo) -> Unit,
+    iconSize: Dp,
 ) {
     Row(
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(
+            space = CategoryPreviewIconGap,
+            alignment = Alignment.CenterHorizontally,
+        ),
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -291,8 +318,9 @@ private fun PreviewRow(
                     app = app,
                     selected = app.ref in selectedApps,
                     onClick = { onAppClick(app) },
+                    size = iconSize,
                 )
-            } ?: PreviewPlaceholder()
+            } ?: PreviewPlaceholder(iconSize)
         }
     }
 }
@@ -302,7 +330,7 @@ private fun CategoryPreviewIcon(
     app: AppInfo,
     selected: Boolean,
     onClick: () -> Unit,
-    size: Dp = 56.dp,
+    size: Dp,
 ) {
     val interactionSource = remember(app.ref) { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
@@ -344,8 +372,8 @@ private fun CategoryPreviewIcon(
 }
 
 @Composable
-private fun PreviewPlaceholder() {
-    Spacer(Modifier.size(56.dp))
+private fun PreviewPlaceholder(size: Dp) {
+    Spacer(Modifier.size(size))
 }
 
 @Composable
@@ -353,13 +381,18 @@ private fun MiniPreviewCluster(
     title: String,
     apps: List<AppInfo>,
     onClick: () -> Unit,
+    size: Dp,
 ) {
     val description = stringResource(R.string.category_open, title)
+    val miniIconSize = minOf(
+        CategoryMiniPreviewIconSize,
+        (size - CategoryMiniPreviewIconGap) / 2,
+    )
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(56.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .size(size)
+            .clip(RoundedCornerShape(16.dp))
             .background(Color.Black.copy(alpha = 0.16f))
             .semantics {
                 contentDescription = description
@@ -376,18 +409,18 @@ private fun MiniPreviewCluster(
                 imageVector = Icons.Rounded.Apps,
                 contentDescription = null,
                 tint = Kome.copy(alpha = 0.70f),
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(28.dp),
             )
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(CategoryMiniPreviewIconGap)) {
                 repeat(2) { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(CategoryMiniPreviewIconGap)) {
                         repeat(2) { column ->
                             val app = apps.getOrNull(row * 2 + column)
                             if (app == null) {
-                                Spacer(Modifier.size(22.dp))
+                                Spacer(Modifier.size(miniIconSize))
                             } else {
-                                AppIcon(app = app.ref, size = 22.dp)
+                                AppIcon(app = app.ref, size = miniIconSize)
                             }
                         }
                     }
@@ -396,5 +429,10 @@ private fun MiniPreviewCluster(
         }
     }
 }
+
+private val CategoryPreviewIconSize = 66.dp
+private val CategoryPreviewIconGap = 10.dp
+private val CategoryMiniPreviewIconSize = 28.dp
+private val CategoryMiniPreviewIconGap = 4.dp
 
 internal val IOS_SELECTION_BLUE = Color(0xFF0A84FF)

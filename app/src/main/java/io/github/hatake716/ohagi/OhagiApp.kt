@@ -12,4 +12,14 @@ class OhagiApp : Application() {
         graph = Graph(this)
         graph.start()
     }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::graph.isInitialized) graph.trimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::graph.isInitialized) graph.clearMemoryCaches()
+    }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
 import io.github.hatake716.ohagi.data.AppRepository
 import io.github.hatake716.ohagi.data.LayoutRepository
+import io.github.hatake716.ohagi.widget.WidgetHostController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ class Graph(context: Context) {
 
     val appRepository = AppRepository(appContext)
     val layoutRepository = LayoutRepository(appContext)
+    val widgetHost = WidgetHostController(appContext)
 
     fun start() {
         appRepository.startWatching()
@@ -59,6 +61,14 @@ class Graph(context: Context) {
                     }
                 }
         }
+    }
+
+    fun trimMemory(level: Int) {
+        appRepository.trimMemory(level)
+    }
+
+    fun clearMemoryCaches() {
+        appRepository.clearIconCache()
     }
 }
 

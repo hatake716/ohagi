@@ -9,6 +9,7 @@ import androidx.datastore.dataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -54,20 +55,30 @@ class LayoutRepository(context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val store = context.applicationContext.layoutDataStore
+    private val updates = Channel<(LayoutState) -> LayoutState>(Channel.UNLIMITED)
 
     val state: StateFlow<LayoutState> =
         store.data
             .map { it.normalized() }
             .stateIn(scope, SharingStarted.Eagerly, LayoutState())
 
-    private fun update(transform: (LayoutState) -> LayoutState) {
+    init {
+        // 1本のconsumerで操作順を保ち、操作ごとのCoroutine生成と書き込み競合を避ける。
         scope.launch {
-            try {
-                store.updateData { current -> transform(current.normalized()).normalized() }
-            } catch (e: Exception) {
-                // ディスク書き込み失敗でランチャーを落とさない(次回操作で再試行される)
-                Log.w("LayoutRepository", "レイアウトの保存に失敗しました", e)
+            for (transform in updates) {
+                try {
+                    store.updateData { current -> transform(current.normalized()).normalized() }
+                } catch (e: Exception) {
+                    // 失敗した1操作だけを捨て、後続操作の保存は継続する。
+                    Log.w(TAG, "レイアウトの保存に失敗しました", e)
+                }
             }
+        }
+    }
+
+    private fun update(transform: (LayoutState) -> LayoutState) {
+        if (updates.trySend(transform).isFailure) {
+            Log.w(TAG, "レイアウト更新キューへ操作を追加できませんでした")
         }
     }
 
@@ -78,21 +89,34 @@ class LayoutRepository(context: Context) {
                 dock + List(LayoutState.DOCK_SLOT_COUNT - dock.size) { null }
             else -> dock.take(LayoutState.DOCK_SLOT_COUNT)
         }
-        val homeFixed = when {
+        val migratedHome = when {
             version < LayoutState.CURRENT_VERSION && home.size == LEGACY_HOME_CELL_COUNT ->
                 migrateFiveBySixHome(home)
-            home.size == LayoutState.HOME_CELL_COUNT -> home
-            home.size < LayoutState.HOME_CELL_COUNT ->
-                home + List(LayoutState.HOME_CELL_COUNT - home.size) { null }
-            // 未知の旧レイアウトでも、空セルを先に切り捨ててアプリを可能な限り保持する。
-            else -> home.filterNotNull().take(LayoutState.HOME_CELL_COUNT)
-                .let { compacted ->
-                    List(LayoutState.HOME_CELL_COUNT) { index -> compacted.getOrNull(index) }
-                }
+            else -> home
         }
+        val maxCells = LayoutState.HOME_CELL_COUNT * LayoutState.MAX_HOME_PAGE_COUNT
+        val retainedHome = migratedHome.take(maxCells)
+        val pageCount = ((retainedHome.size + LayoutState.HOME_CELL_COUNT - 1) /
+            LayoutState.HOME_CELL_COUNT)
+            .coerceIn(1, LayoutState.MAX_HOME_PAGE_COUNT)
+        val normalizedCellCount = pageCount * LayoutState.HOME_CELL_COUNT
+        val homeFixed = retainedHome + List(normalizedCellCount - retainedHome.size) { null }
         return copy(
-            home = homeFixed,
-            dock = dockFixed,
+            // iOS同様、最後のアプリを外して空になったフォルダは自動削除する。
+            home = homeFixed.map { item ->
+                if (item is HomeItem.HomeFolder && item.apps.isEmpty()) null else item
+            },
+            dock = dockFixed.map { item ->
+                if (item is DockItem.DockFolder && item.apps.isEmpty()) null else item
+            },
+            widgets = widgets
+                .filter { placement ->
+                    placement.appWidgetId > 0 &&
+                        placement.providerPackage.isNotBlank() &&
+                        placement.providerClass.isNotBlank()
+                }
+                .distinctBy(WidgetPlacement::appWidgetId)
+                .map { it.copy(heightDp = it.heightDp.coerceIn(96, 480)) },
             version = LayoutState.CURRENT_VERSION,
         )
     }
@@ -122,6 +146,7 @@ class LayoutRepository(context: Context) {
     private companion object {
         const val LEGACY_HOME_COLUMNS = 5
         const val LEGACY_HOME_CELL_COUNT = 30
+        const val TAG = "LayoutRepository"
     }
 
     // ---- ホームグリッド操作 ----
@@ -129,7 +154,7 @@ class LayoutRepository(context: Context) {
     /** ホームグリッドの 1 セルを設定/クリアする。 */
     fun setHomeItem(index: Int, item: HomeItem?) {
         update { state ->
-            if (index !in 0 until LayoutState.HOME_CELL_COUNT) state
+            if (index !in state.home.indices) state
             else state.copy(home = state.home.toMutableList().apply { this[index] = item })
         }
     }
@@ -137,7 +162,7 @@ class LayoutRepository(context: Context) {
     /** ホームの空きセルにアプリを置く。アプリ入りセルには置けない(no-op)。 */
     fun addAppToHomeSlot(index: Int, app: AppRef) {
         update { state ->
-            if (index !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (index !in state.home.indices) return@update state
             if (state.home[index] != null) return@update state
             state.copy(home = state.home.toMutableList().apply { this[index] = HomeItem.HomeApp(app) })
         }
@@ -146,7 +171,7 @@ class LayoutRepository(context: Context) {
     /** ホームグリッドの 2 セルの中身を入れ替える(空きセル=null との入替も可)。 */
     fun swapHomeItems(a: Int, b: Int) {
         update { state ->
-            val n = LayoutState.HOME_CELL_COUNT
+            val n = state.home.size
             if (a == b || a !in 0 until n || b !in 0 until n) return@update state
             val home = state.home.toMutableList()
             val tmp = home[a]; home[a] = home[b]; home[b] = tmp
@@ -154,62 +179,45 @@ class LayoutRepository(context: Context) {
         }
     }
 
-    // ---- 領域跨ぎ移動(アプリのみ) ----
+    // ---- 領域跨ぎ移動（アプリ／フォルダ） ----
 
     /**
-     * ホームのアプリをドックへ移動する。ドック先が空なら移動(ホーム側は空に)、
-     * 非空アプリなら入替(型変換)。フォルダは対象外(呼び出し側で弾く)。
+     * ホームのアプリまたはフォルダをDockへ移動する。
+     * 移動先が非空なら、ホーム／Dockの型を変換しながら項目ごと入れ替える。
      */
     fun moveHomeToDock(homeIndex: Int, dockSlot: Int) {
-        update { state ->
-            if (homeIndex !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
-            if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val homeItem = state.home[homeIndex] as? HomeItem.HomeApp ?: return@update state
-            val home = state.home.toMutableList()
-            val dock = state.dock.toMutableList()
-            when (val dst = dock[dockSlot]) {
-                null -> {
-                    dock[dockSlot] = DockItem.DockApp(homeItem.app)
-                    home[homeIndex] = null
-                }
-                is DockItem.DockApp -> {
-                    // 入替: ドックのアプリをホームへ、ホームのアプリをドックへ
-                    dock[dockSlot] = DockItem.DockApp(homeItem.app)
-                    home[homeIndex] = HomeItem.HomeApp(dst.app)
-                }
-                is DockItem.DockFolder -> return@update state // フォルダ先には落とさない
-            }
-            state.copy(home = home, dock = dock)
-        }
+        update { state -> state.moveHomeItemToDock(homeIndex, dockSlot) }
     }
 
-    /** ドックのアプリをホームへ移動する(対称)。 */
+    /** Dockのアプリまたはフォルダをホームへ移動する（対称）。 */
     fun moveDockToHome(dockSlot: Int, homeIndex: Int) {
-        update { state ->
-            if (homeIndex !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
-            if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val dockItem = state.dock[dockSlot] as? DockItem.DockApp ?: return@update state
-            val home = state.home.toMutableList()
-            val dock = state.dock.toMutableList()
-            when (val dst = home[homeIndex]) {
-                null -> {
-                    home[homeIndex] = HomeItem.HomeApp(dockItem.app)
-                    dock[dockSlot] = null
-                }
-                is HomeItem.HomeApp -> {
-                    home[homeIndex] = HomeItem.HomeApp(dockItem.app)
-                    dock[dockSlot] = DockItem.DockApp(dst.app)
-                }
-                is HomeItem.HomeFolder -> return@update state
-            }
-            state.copy(home = home, dock = dock)
-        }
+        update { state -> state.moveDockItemToHome(dockSlot, homeIndex) }
+    }
+
+    /** フォルダ内を含むアプリ1件をホームセルへ原子的に移動／入れ替えする。 */
+    fun moveAppToHome(index: Int, source: AppMoveSource) {
+        update { state -> state.moveAppToHome(index, source) }
+    }
+
+    /** フォルダ内を含むアプリ1件をDockスロットへ原子的に移動／入れ替えする。 */
+    fun moveAppToDock(slot: Int, source: AppMoveSource) {
+        update { state -> state.moveAppToDock(slot, source) }
+    }
+
+    /** アプリをホーム上のアプリへ重ねてフォルダ化するか、既存フォルダへ追加する。 */
+    fun stackAppOnHome(index: Int, source: AppMoveSource, folderName: String) {
+        update { state -> state.stackAppOnHome(index, source, folderName) }
+    }
+
+    /** アプリをDock上のアプリへ重ねてフォルダ化するか、既存フォルダへ追加する。 */
+    fun stackAppOnDock(slot: Int, source: AppMoveSource, folderName: String) {
+        update { state -> state.stackAppOnDock(slot, source, folderName) }
     }
 
     /** ドロワーからホームの指定セルへアプリを設置する(空/アプリセルは上書き、フォルダは不可)。 */
     fun placeAppOnHome(index: Int, app: AppRef) {
         update { state ->
-            if (index !in 0 until LayoutState.HOME_CELL_COUNT) return@update state
+            if (index !in state.home.indices) return@update state
             if (state.home[index] is HomeItem.HomeFolder) return@update state
             state.copy(home = state.home.toMutableList().apply { this[index] = HomeItem.HomeApp(app) })
         }
@@ -244,6 +252,58 @@ class LayoutRepository(context: Context) {
         }
     }
 
+    // ---- ホームページ操作 ----
+
+    /** Appライブラリ直前へ空のホームページを1枚追加する。 */
+    fun appendHomePage() {
+        update(LayoutState::appendEmptyHomePage)
+    }
+
+    /** D&Dがキャンセルされた時だけ、末尾に残った空ページを取り除く。 */
+    fun trimTrailingEmptyHomePages() {
+        update(LayoutState::withoutTrailingEmptyHomePages)
+    }
+
+    /** Pager再構成中のフォールバックtargetから、アプリ1件を目的ページへ移す。 */
+    fun moveAppToHomePage(page: Int, source: AppMoveSource) {
+        update { state -> state.moveAppToHomePage(page, source) }
+    }
+
+    /** Pager再構成中のフォールバックtargetから、ホーム項目全体を目的ページへ移す。 */
+    fun moveHomeItemToHomePage(page: Int, sourceIndex: Int) {
+        update { state -> state.moveHomeItemToHomePage(page, sourceIndex) }
+    }
+
+    /** Pager再構成中のフォールバックtargetから、Dock項目全体を目的ページへ移す。 */
+    fun moveDockItemToHomePage(page: Int, dockSlot: Int) {
+        update { state -> state.moveDockItemToHomePage(page, dockSlot) }
+    }
+
+    // ---- ウィジェット専用ページ ----
+
+    fun addWidget(placement: WidgetPlacement) {
+        update { state ->
+            if (state.widgets.any { it.appWidgetId == placement.appWidgetId }) state
+            else state.copy(widgets = state.widgets + placement)
+        }
+    }
+
+    fun removeWidget(appWidgetId: Int) {
+        update { state ->
+            state.copy(widgets = state.widgets.filterNot { it.appWidgetId == appWidgetId })
+        }
+    }
+
+    fun reorderWidget(appWidgetId: Int, direction: Int) {
+        update { state -> state.withWidgetMoved(appWidgetId, direction) }
+    }
+
+    fun pruneInvalidWidgets(validIds: Set<Int>) {
+        update { state ->
+            state.copy(widgets = state.widgets.filter { it.appWidgetId in validIds })
+        }
+    }
+
     /**
      * ドックにアプリを置く。
      * 空きスロット → DockApp、フォルダ → フォルダへ追加。アプリ入りスロットには置けない。
@@ -264,49 +324,25 @@ class LayoutRepository(context: Context) {
         }
     }
 
-    /** スロットをフォルダに変換する。アプリ入りならそのアプリを含むフォルダに、空なら空フォルダに。 */
-    fun convertSlotToFolder(slot: Int, name: String) {
-        update { state ->
-            if (slot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val dock = state.dock.toMutableList()
-            dock[slot] = when (val current = dock[slot]) {
-                is DockItem.DockApp -> DockItem.DockFolder(name, listOf(current.app))
-                is DockItem.DockFolder -> current
-                null -> DockItem.DockFolder(name, emptyList())
-            }
-            state.copy(dock = dock)
-        }
+    /** ホーム／Dockのアプリ項目を、選択したアプリとまとめてフォルダ化する。 */
+    fun createOrAddFolder(location: FolderLocation, name: String, apps: List<AppRef>) {
+        update { state -> state.createOrAddFolder(location, name, apps) }
     }
 
-    fun addAppsToFolder(slot: Int, apps: List<AppRef>) {
-        update { state ->
-            if (slot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val dock = state.dock.toMutableList()
-            val folder = dock[slot] as? DockItem.DockFolder ?: return@update state
-            val merged = (folder.apps + apps).distinct()
-            dock[slot] = folder.copy(apps = merged)
-            state.copy(dock = dock)
-        }
+    fun addAppsToFolder(location: FolderLocation, apps: List<AppRef>) {
+        update { state -> state.addAppsToFolder(location, apps) }
     }
 
-    fun removeAppFromFolder(slot: Int, app: AppRef) {
-        update { state ->
-            if (slot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val dock = state.dock.toMutableList()
-            val folder = dock[slot] as? DockItem.DockFolder ?: return@update state
-            dock[slot] = folder.copy(apps = folder.apps.filterNot { it == app })
-            state.copy(dock = dock)
-        }
+    fun removeAppFromFolder(location: FolderLocation, app: AppRef) {
+        update { state -> state.removeAppFromFolder(location, app) }
     }
 
-    fun renameFolder(slot: Int, name: String) {
-        update { state ->
-            if (slot !in 0 until LayoutState.DOCK_SLOT_COUNT) return@update state
-            val dock = state.dock.toMutableList()
-            val folder = dock[slot] as? DockItem.DockFolder ?: return@update state
-            dock[slot] = folder.copy(name = name.ifBlank { folder.name })
-            state.copy(dock = dock)
-        }
+    fun renameFolder(location: FolderLocation, name: String) {
+        update { state -> state.renameFolder(location, name) }
+    }
+
+    fun reorderFolderApps(location: FolderLocation, fromIndex: Int, toIndex: Int) {
+        update { state -> state.reorderFolderApps(location, fromIndex, toIndex) }
     }
 
     // ---- メンテナンス ----
@@ -319,8 +355,10 @@ class LayoutRepository(context: Context) {
                     null -> null
                     is DockItem.DockApp ->
                         if (item.app.packageName in installedPackages) item else null
-                    is DockItem.DockFolder ->
-                        item.copy(apps = item.apps.filter { it.packageName in installedPackages })
+                    is DockItem.DockFolder -> {
+                        val remaining = item.apps.filter { it.packageName in installedPackages }
+                        if (remaining.isEmpty()) null else item.copy(apps = remaining)
+                    }
                 }
             }
             val home = state.home.map { item ->
@@ -328,8 +366,10 @@ class LayoutRepository(context: Context) {
                     null -> null
                     is HomeItem.HomeApp ->
                         if (item.app.packageName in installedPackages) item else null
-                    is HomeItem.HomeFolder ->
-                        item.copy(apps = item.apps.filter { it.packageName in installedPackages })
+                    is HomeItem.HomeFolder -> {
+                        val remaining = item.apps.filter { it.packageName in installedPackages }
+                        if (remaining.isEmpty()) null else item.copy(apps = remaining)
+                    }
                 }
             }
             state.copy(home = home, dock = dock)
