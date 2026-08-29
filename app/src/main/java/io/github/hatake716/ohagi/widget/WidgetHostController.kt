@@ -10,6 +10,8 @@ import android.os.Bundle
 import android.os.Process
 import android.util.Log
 import io.github.hatake716.ohagi.data.WidgetPlacement
+import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 /** Android標準AppWidgetHostをランチャー全体で1つだけ管理する。 */
@@ -18,6 +20,10 @@ class WidgetHostController(context: Context) {
     private val appContext = context.applicationContext
     private val manager = AppWidgetManager.getInstance(appContext)
     private val host = AppWidgetHost(appContext, HOST_ID)
+    // Pagerから一度外れた直後の再入場では、まだ生存しているRemoteViewsを再利用する。
+    // WeakReferenceなので非表示Widgetや古いActivityをRAMへ固定しない。
+    private val reusableViews = ConcurrentHashMap<Int, WeakReference<AppWidgetHostView>>()
+    private val lastWidgetSizes = ConcurrentHashMap<Int, WidgetSize>()
 
     fun startListening() {
         runCatching(host::startListening)
@@ -32,6 +38,8 @@ class WidgetHostController(context: Context) {
     fun allocateAppWidgetId(): Int = host.allocateAppWidgetId()
 
     fun deleteAppWidgetId(appWidgetId: Int) {
+        reusableViews.remove(appWidgetId)
+        lastWidgetSizes.remove(appWidgetId)
         runCatching { host.deleteAppWidgetId(appWidgetId) }
             .onFailure { Log.w(TAG, "ウィジェットIDの削除に失敗しました: $appWidgetId", it) }
     }
@@ -87,9 +95,17 @@ class WidgetHostController(context: Context) {
         context: Context,
         appWidgetId: Int,
         info: AppWidgetProviderInfo,
-    ): AppWidgetHostView = host.createView(context, appWidgetId, info).apply {
-        setAppWidget(appWidgetId, info)
-        setPadding(0, 0, 0, 0)
+    ): AppWidgetHostView {
+        reusableViews[appWidgetId]?.get()?.let { cached ->
+            if (cached.context === context && cached.parent == null) {
+                return cached
+            }
+        }
+        return host.createView(context, appWidgetId, info).apply {
+            setAppWidget(appWidgetId, info)
+            setPadding(0, 0, 0, 0)
+            reusableViews[appWidgetId] = WeakReference(this)
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -124,6 +140,8 @@ class WidgetHostController(context: Context) {
     }
 
     fun updateSize(appWidgetId: Int, widthDp: Int, heightDp: Int) {
+        val size = WidgetSize(widthDp, heightDp)
+        if (lastWidgetSizes[appWidgetId] == size) return
         val options = Bundle().apply {
             putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
             putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
@@ -134,7 +152,11 @@ class WidgetHostController(context: Context) {
                 AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
             )
         }
-        manager.updateAppWidgetOptions(appWidgetId, options)
+        runCatching { manager.updateAppWidgetOptions(appWidgetId, options) }
+            .onSuccess { lastWidgetSizes[appWidgetId] = size }
+            .onFailure {
+                Log.w(TAG, "ウィジェットサイズ更新に失敗しました: $appWidgetId", it)
+            }
     }
 
     fun placementFor(appWidgetId: Int, info: AppWidgetProviderInfo): WidgetPlacement {
@@ -160,4 +182,9 @@ class WidgetHostController(context: Context) {
         const val MAX_WIDGET_HEIGHT_DP = 360
         const val TAG = "WidgetHost"
     }
+
+    private data class WidgetSize(
+        val widthDp: Int,
+        val heightDp: Int,
+    )
 }

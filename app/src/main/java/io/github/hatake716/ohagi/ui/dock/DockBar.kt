@@ -154,14 +154,11 @@ private fun DockSlot(
     val haptic = LocalHapticFeedback.current
 
     val payload = item?.let { DragPayload.FromDock(slot) }
-    val dragIconApp = when (item) {
-        is DockItem.DockApp -> item.app
-        is DockItem.DockFolder -> item.apps.firstOrNull()
-        null -> null
-    }
-    val dragIcon by rememberAppIconBitmap(dragIconApp)
+    val dragIconApp = (item as? DockItem.DockApp)?.app
+    val dragIcon by rememberAppIconBitmap(dragIconApp, DOCK_ICON_SIZE)
     val folderDragIcons by rememberAppIconBitmaps(
         (item as? DockItem.DockFolder)?.apps.orEmpty(),
+        size = FOLDER_PREVIEW_ICON_REQUEST_SIZE,
     )
 
     var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
@@ -240,10 +237,10 @@ private fun DockSlot(
                 .semantics { contentDescription = description },
         ) {
             when (item) {
-                is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = 52.dp)
+                is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = DOCK_ICON_SIZE)
                 is DockItem.DockFolder -> IosFolderIcon(
                     apps = item.apps,
-                    size = 52.dp,
+                    size = DOCK_ICON_SIZE,
                     highlighted = folderReady,
                     preloadedIcons = folderDragIcons,
                 )
@@ -268,3 +265,6 @@ private fun DockSlot(
         }
     }
 }
+
+private val DOCK_ICON_SIZE = 52.dp
+private val FOLDER_PREVIEW_ICON_REQUEST_SIZE = 24.dp

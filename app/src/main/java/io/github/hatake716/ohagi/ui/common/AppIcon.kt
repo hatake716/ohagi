@@ -22,9 +22,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.LocalGraph
+import io.github.hatake716.ohagi.data.AppIconRequest
 import io.github.hatake716.ohagi.data.AppRef
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * アプリアイコンを非同期で読み込んで表示する共通コンポーザブル。
@@ -47,8 +46,29 @@ fun AppIconImage(
     icon: ImageBitmap?,
     size: Dp,
     modifier: Modifier = Modifier,
+    decorated: Boolean = true,
 ) {
     val iosShape = iosIconShape(size)
+
+    if (!decorated) {
+        if (icon != null) {
+            // Repository側ですでに角丸・Hardware Bitmap化済み。密集プレビューでは
+            // アイコンごとのshadow/clip/borderレイヤーを重ねず、そのまま描画する。
+            Image(
+                bitmap = icon,
+                contentDescription = null,
+                modifier = modifier.size(size),
+            )
+        } else {
+            Box(
+                modifier = modifier
+                    .size(size)
+                    .clip(iosShape)
+                    .background(Color(0x24FFFFFF)),
+            )
+        }
+        return
+    }
 
     Box(
         modifier = modifier
@@ -87,16 +107,26 @@ fun rememberAppIconBitmap(
     val requestedSizePx = size?.let { with(LocalDensity.current) { it.roundToPx() } }
     // iconVersion をキーに含め、アプリ更新でキャッシュが無効化されたら再読込する
     val iconVersion = graph.appRepository.iconVersion
+    val cached = remember(app, requestedSizePx, iconVersion) {
+        if (requestedSizePx == null) {
+            graph.appRepository.cachedIconOf(app)
+        } else {
+            graph.appRepository.cachedIconOf(app, requestedSizePx)
+        }
+    }
+    if (cached != null) {
+        return remember(app, requestedSizePx, iconVersion, cached) {
+            mutableStateOf(cached)
+        }
+    }
     // LazyGridのセルが再利用されても直前のアプリBitmapを1フレーム表示しないよう、
     // app/iconVersionごとにState自体を作り直す。
     return key(app, requestedSizePx, iconVersion) {
         produceState<ImageBitmap?>(initialValue = null) {
-            value = withContext(Dispatchers.IO) {
-                if (requestedSizePx == null) {
-                    graph.appRepository.iconOf(app)
-                } else {
-                    graph.appRepository.iconOf(app, requestedSizePx)
-                }
+            value = if (requestedSizePx == null) {
+                graph.appRepository.loadIcon(app)
+            } else {
+                graph.appRepository.loadIcon(app, requestedSizePx)
             }
         }
     }
@@ -104,16 +134,67 @@ fun rememberAppIconBitmap(
 
 /** フォルダのドラッグ装飾用に、先頭ページのアイコンをまとめて非同期取得する。 */
 @Composable
-fun rememberAppIconBitmaps(apps: List<AppRef>): State<List<ImageBitmap?>> {
+fun rememberAppIconBitmaps(
+    apps: List<AppRef>,
+    size: Dp? = null,
+): State<List<ImageBitmap?>> {
     val firstPage = remember(apps) { apps.take(9) }
     if (firstPage.isEmpty()) return remember { mutableStateOf(emptyList()) }
 
     val graph = LocalGraph.current
+    val requestedSizePx = size?.let { with(LocalDensity.current) { it.roundToPx() } }
     val iconVersion = graph.appRepository.iconVersion
-    return key(firstPage, iconVersion) {
-        produceState<List<ImageBitmap?>>(initialValue = List(firstPage.size) { null }) {
-            value = withContext(Dispatchers.IO) {
-                firstPage.map { app -> graph.appRepository.iconOf(app) }
+    val cached = remember(firstPage, requestedSizePx, iconVersion) {
+        firstPage.map { app ->
+            if (requestedSizePx == null) {
+                graph.appRepository.cachedIconOf(app)
+            } else {
+                graph.appRepository.cachedIconOf(app, requestedSizePx)
+            }
+        }
+    }
+    if (cached.all { it != null }) {
+        return remember(firstPage, requestedSizePx, iconVersion, cached) {
+            mutableStateOf(cached)
+        }
+    }
+    return key(firstPage, requestedSizePx, iconVersion) {
+        produceState<List<ImageBitmap?>>(initialValue = cached) {
+            value = firstPage.mapIndexed { index, app ->
+                cached[index] ?: if (requestedSizePx == null) {
+                    graph.appRepository.loadIcon(app)
+                } else {
+                    graph.appRepository.loadIcon(app, requestedSizePx)
+                }
+            }
+        }
+    }
+}
+
+/** サイズが混在するカテゴリカード用に、複数アイコンを1つのStateで取得する。 */
+@Composable
+fun rememberRequestedAppIconBitmaps(
+    requests: List<AppIconRequest>,
+): State<List<ImageBitmap?>> {
+    if (requests.isEmpty()) return remember { mutableStateOf(emptyList()) }
+
+    val graph = LocalGraph.current
+    val iconVersion = graph.appRepository.iconVersion
+    val cached = remember(requests, iconVersion) {
+        requests.map { request ->
+            graph.appRepository.cachedIconOf(request.ref, request.requestedSizePx)
+        }
+    }
+    if (cached.all { it != null }) {
+        return remember(requests, iconVersion, cached) { mutableStateOf(cached) }
+    }
+    return key(requests, iconVersion) {
+        produceState<List<ImageBitmap?>>(initialValue = cached) {
+            value = requests.mapIndexed { index, request ->
+                cached[index] ?: graph.appRepository.loadIcon(
+                    request.ref,
+                    request.requestedSizePx,
+                )
             }
         }
     }

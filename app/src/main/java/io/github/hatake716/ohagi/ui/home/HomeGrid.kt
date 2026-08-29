@@ -141,14 +141,11 @@ private fun HomeCell(
     val haptic = LocalHapticFeedback.current
 
     val payload = item?.let { DragPayload.FromHome(index) }
-    val dragIconApp = when (item) {
-        is HomeItem.HomeApp -> item.app
-        is HomeItem.HomeFolder -> item.apps.firstOrNull()
-        null -> null
-    }
-    val dragIcon by rememberAppIconBitmap(dragIconApp)
+    val dragIconApp = (item as? HomeItem.HomeApp)?.app
+    val dragIcon by rememberAppIconBitmap(dragIconApp, HOME_ICON_SIZE)
     val folderDragIcons by rememberAppIconBitmaps(
         (item as? HomeItem.HomeFolder)?.apps.orEmpty(),
+        size = FOLDER_PREVIEW_ICON_REQUEST_SIZE,
     )
 
     var folderTargetBounds by remember { mutableStateOf<Rect?>(null) }
@@ -304,6 +301,7 @@ internal fun HomeCellContent(
 /** iPhoneの4列ホームに近い、アイコン本体と隣接余白の視覚比率。 */
 private val HOME_ICON_SIZE = 60.dp
 private val HOME_ICON_TARGET_SIZE = 68.dp
+private val FOLDER_PREVIEW_ICON_REQUEST_SIZE = 24.dp
 
 /** 壁紙の上でも読める白 + ドロップシャドウのラベル。空文字なら高さだけ確保。 */
 @Composable

@@ -207,7 +207,7 @@ private fun DrawerCell(
     )
     val haptic = LocalHapticFeedback.current
 
-    val icon by rememberAppIconBitmap(app.ref)
+    val icon by rememberAppIconBitmap(app.ref, DRAWER_ICON_SIZE)
     val payload = remember(app.ref) { DragPayload.FromDrawer(app.ref) }
 
     Box(
@@ -235,7 +235,7 @@ private fun DrawerCell(
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            AppIconImage(icon = icon, size = 56.dp)
+            AppIconImage(icon = icon, size = DRAWER_ICON_SIZE)
             Spacer(Modifier.height(6.dp))
             // iOS ホーム風: アイコン下に最大 2 行のラベル。半透明背景で読めるよう白系。
             Text(
@@ -266,6 +266,8 @@ private fun DrawerCell(
         )
     }
 }
+
+private val DRAWER_ICON_SIZE = 56.dp
 
 /** セル操作メニューのヘッダー（アイコン + ラベル）。 */
 @Composable

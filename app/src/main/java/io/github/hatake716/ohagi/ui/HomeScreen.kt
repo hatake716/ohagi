@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppInfo
@@ -74,9 +75,13 @@ import io.github.hatake716.ohagi.data.homeGlobalIndex
 import io.github.hatake716.ohagi.data.homePage
 import io.github.hatake716.ohagi.data.homePageCount
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
+import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
+import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
+import io.github.hatake716.ohagi.ui.common.appLibraryPrefetchBudget
+import io.github.hatake716.ohagi.ui.common.buildAppLibraryIconPrefetchRequests
 import io.github.hatake716.ohagi.ui.dock.DockBar
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.isOhagiRemovableDrag
@@ -90,6 +95,8 @@ import io.github.hatake716.ohagi.ui.widget.WidgetPage
 import io.github.hatake716.ohagi.ui.widget.WidgetPickerSheet
 import io.github.hatake716.ohagi.util.LaunchUtils
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -123,15 +130,35 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val layout by graph.layoutRepository.state.collectAsStateWithLifecycle()
-    val apps by graph.appRepository.apps.collectAsStateWithLifecycle()
-    val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
+    val latestLayout by graph.layoutRepository.state.collectAsStateWithLifecycle()
+    val latestApps by graph.appRepository.apps.collectAsStateWithLifecycle()
 
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
+    var layout by remember { mutableStateOf(latestLayout) }
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_HOME_PAGER_INDEX,
         pageCount = { layout.homePageCount + STATIC_PAGE_COUNT },
     )
+    // DataStoreの初回読込や直前操作の書込み完了も、指が動いている間は
+    // Pagerのページ数・全セルを差し替えず、settle後に一度で反映する。
+    LaunchedEffect(latestLayout, pagerState) {
+        if (pagerState.isScrollInProgress) {
+            snapshotFlow { pagerState.isScrollInProgress }
+                .first { scrolling -> !scrolling }
+        }
+        layout = latestLayout
+    }
+    var apps by remember { mutableStateOf(latestApps) }
+    // PackageManagerの全件結果がPager操作中に届いても、ホームとAppライブラリを
+    // 同じフレームで総入れ替えしない。指が止まった直後に最新一覧へ追従する。
+    LaunchedEffect(latestApps, pagerState) {
+        if (pagerState.isScrollInProgress) {
+            snapshotFlow { pagerState.isScrollInProgress }
+                .first { scrolling -> !scrolling }
+        }
+        apps = latestApps
+    }
+    val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
     val appLibraryPage = layout.homePageCount + 1
 
     // HOME再押下ではオーバーレイを閉じ、必ず1枚目のホームへ戻る。
@@ -168,7 +195,50 @@ fun HomeScreen(
     var pageLimitToastShown by remember { mutableStateOf(false) }
     val repo = graph.layoutRepository
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
-    val edgeZonePx = with(LocalDensity.current) { HOME_PAGE_EDGE_ZONE.toPx() }
+    val density = LocalDensity.current
+    val edgeZonePx = with(density) { HOME_PAGE_EDGE_ZONE.toPx() }
+    val appLibraryIconRequests = remember(apps, density.density) {
+        val prefetchBudget = appLibraryPrefetchBudget(graph.appRepository.isLowRamDevice)
+        buildAppLibraryIconPrefetchRequests(
+            apps = apps,
+            previewIconSizePx = with(density) {
+                APP_LIBRARY_PREVIEW_ICON_SIZE.roundToPx()
+            },
+            miniIconSizePx = with(density) {
+                APP_LIBRARY_MINI_ICON_SIZE.roundToPx()
+            },
+            categoryLimit = prefetchBudget.fullCategoryCount,
+            partialCategoryLimit = prefetchBudget.partialCategoryCount,
+        )
+    }
+    // 初期ホームが落ち着いた時だけ、Appライブラリ上端の画像を画面外で用意する。
+    // onPauseでJobを止めるため、通常のアプリ起動とCPUを奪い合わない。
+    LifecycleResumeEffect(appLibraryIconRequests, pagerState) {
+        val prefetchJob = scope.launch {
+            if (appLibraryIconRequests.isEmpty()) return@launch
+            snapshotFlow {
+                pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX &&
+                    !pagerState.isScrollInProgress &&
+                    overlay == Overlay.None &&
+                    activeDrag == null
+            }.collectLatest { idleOnHome ->
+                if (idleOnHome) {
+                    // collectLatestにより、指が動き始めた時点で先読みをcancelする。
+                    // 進行中の1画像だけを終えた後、Pagerの表示要求へworkerを譲る。
+                    delay(APP_LIBRARY_PREFETCH_DELAY_MS)
+                    if (
+                        pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX &&
+                        !pagerState.isScrollInProgress &&
+                        overlay == Overlay.None &&
+                        activeDrag == null
+                    ) {
+                        graph.appRepository.prefetchIcons(appLibraryIconRequests)
+                    }
+                }
+            }
+        }
+        onPauseOrDispose { prefetchJob.cancel() }
+    }
 
     LaunchedEffect(layout.home, edgeDropCommitted, edgeDropBaselineHome) {
         val baseline = edgeDropBaselineHome ?: return@LaunchedEffect
@@ -1160,6 +1230,7 @@ private val HOME_GRID_BOTTOM_RESERVED = 104.dp
 private val HOME_PAGE_EDGE_ZONE = 36.dp
 private val HOME_PAGE_INDICATOR_BOTTOM = 100.dp
 private const val HOME_PAGE_EDGE_COOLDOWN_MS = 420L
+private const val APP_LIBRARY_PREFETCH_DELAY_MS = 260L
 private const val WIDGET_PAGER_INDEX = 0
 private const val PRIMARY_HOME_PAGER_INDEX = 1
 private const val STATIC_PAGE_COUNT = 2

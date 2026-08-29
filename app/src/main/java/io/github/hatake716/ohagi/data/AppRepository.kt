@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.SystemClock
@@ -19,11 +20,15 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.createBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.Collator
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -33,6 +38,12 @@ data class AppInfo(
     val ref: AppRef,
     val label: String,
     val category: AppCategory,
+)
+
+/** 画面表示より前に用意するアイコンと、その実表示サイズ。 */
+data class AppIconRequest(
+    val ref: AppRef,
+    val requestedSizePx: Int,
 )
 
 private data class CachedIcon(
@@ -57,13 +68,19 @@ class AppRepository(private val context: Context) {
     private val _iconVersion = mutableIntStateOf(0)
     val iconVersion: Int get() = _iconVersion.intValue
 
-    private val iconCacheMaxKb = if (
+    val isLowRamDevice: Boolean =
         context.getSystemService(ActivityManager::class.java)?.isLowRamDevice == true
-    ) {
+    private val iconCacheMaxKb = if (isLowRamDevice) {
         LOW_RAM_ICON_CACHE_KB
     } else {
         DEFAULT_ICON_CACHE_KB
     }
+    // PackageManagerのDrawable展開とBitmap生成を大量並列にすると、Pager操作中に
+    // CPU/GPU準備が集中する。端末性能に応じて1〜2本へ絞り、UIスレッドを優先する。
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val iconLoadDispatcher = Dispatchers.IO.limitedParallelism(
+        if (isLowRamDevice) LOW_RAM_ICON_LOAD_PARALLELISM else ICON_LOAD_PARALLELISM,
+    )
     private val iconCache = object : LruCache<String, CachedIcon>(iconCacheMaxKb) {
         override fun sizeOf(key: String, value: CachedIcon): Int = value.sizeKb
     }
@@ -189,10 +206,35 @@ class AppRepository(private val context: Context) {
             ?: packageLabelIndex[ref.packageName]
             ?: ref.packageName.substringAfterLast('.')
 
+    /** LRUにある画像だけを同期取得する。ヒット時はCompose側のCoroutine生成も不要になる。 */
+    fun cachedIconOf(ref: AppRef, requestedSizePx: Int = LARGE_ICON_SIZE_PX): ImageBitmap? {
+        val renderSizePx = iconRenderSize(requestedSizePx)
+        val key = iconCacheKey(ref, renderSizePx)
+        return synchronized(iconCache) { iconCache.get(key)?.image }
+    }
+
+    /** アイコン生成を制限付きIO dispatcherへ集約し、Pager中のCPU飽和を防ぐ。 */
+    suspend fun loadIcon(
+        ref: AppRef,
+        requestedSizePx: Int = LARGE_ICON_SIZE_PX,
+    ): ImageBitmap? = withContext(iconLoadDispatcher) {
+        iconOf(ref, requestedSizePx)
+    }
+
+    /** Appライブラリなどの初回表示に必要な画像を、画面外で順番に準備する。 */
+    suspend fun prefetchIcons(requests: List<AppIconRequest>) {
+        withContext(iconLoadDispatcher) {
+            requests.forEach { request ->
+                currentCoroutineContext().ensureActive()
+                iconOf(request.ref, request.requestedSizePx)
+            }
+        }
+    }
+
     /** アイコンを読み込む(呼び出しスレッドで実行されるため、UI からは IO ディスパッチャで呼ぶこと)。 */
     fun iconOf(ref: AppRef, requestedSizePx: Int = LARGE_ICON_SIZE_PX): ImageBitmap? {
         val renderSizePx = iconRenderSize(requestedSizePx)
-        val key = "${ref.packageName}/${ref.className}@$renderSizePx"
+        val key = iconCacheKey(ref, renderSizePx)
         synchronized(iconCache) { iconCache.get(key)?.image }?.let { return it }
 
         // 同じアイコンは表示本体・D&D装飾・フォルダプレビューから同時要求される。
@@ -212,7 +254,22 @@ class AppRepository(private val context: Context) {
                     }
                 }
                 try {
-                    val bitmap = renderRoundedIcon(drawable, renderSizePx).asImageBitmap()
+                    val softwareBitmap = renderRoundedIcon(drawable, renderSizePx)
+                    // 表示専用アイコンはGPU Bitmapへ移してから公開する。初回draw時に
+                    // UIスレッドへ集中していたpalette計算とtexture uploadを前倒しし、
+                    // software pixels + GPU textureの二重保持も避ける。
+                    val displayBitmap = runCatching {
+                        softwareBitmap.copy(Bitmap.Config.HARDWARE, false)
+                    }.getOrNull()
+                    val bitmap = if (displayBitmap != null) {
+                        softwareBitmap.recycle()
+                        displayBitmap.asImageBitmap()
+                    } else {
+                        // 端末固有理由でHARDWARE化できなくても、RenderThreadへの
+                        // 非同期uploadだけはアイコン読込スレッドから先行させる。
+                        softwareBitmap.prepareToDraw()
+                        softwareBitmap.asImageBitmap()
+                    }
                     // 読み込み中に対象パッケージ群が更新された場合は古い画像を保持しない。
                     if (iconVersion == versionAtStart) {
                         synchronized(iconCache) {
@@ -240,8 +297,11 @@ class AppRepository(private val context: Context) {
     fun trimMemory(level: Int) {
         val targetKb = when {
             level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> 0
-            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> BACKGROUND_ICON_CACHE_KB
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> BACKGROUND_ICON_CACHE_KB
+            // UIが隠れただけなら、次のHOME復帰に必要な分は残す。実際の
+            // background/critical圧迫通知では従来どおり即座に縮小・解放する。
+            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ->
+                if (isLowRamDevice) LOW_RAM_HIDDEN_ICON_CACHE_KB else HIDDEN_ICON_CACHE_KB
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> CRITICAL_ICON_CACHE_KB
             level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> RUNNING_LOW_ICON_CACHE_KB
             else -> return
         }.coerceAtMost(iconCacheMaxKb)
@@ -297,6 +357,9 @@ class AppRepository(private val context: Context) {
         else -> LARGE_ICON_SIZE_PX
     }
 
+    private fun iconCacheKey(ref: AppRef, renderSizePx: Int): String =
+        "${ref.packageName}/${ref.className}@$renderSizePx"
+
     private companion object {
         const val SMALL_ICON_SIZE_PX = 96
         const val MEDIUM_ICON_SIZE_PX = 144
@@ -304,7 +367,11 @@ class AppRepository(private val context: Context) {
         const val DEFAULT_ICON_CACHE_KB = 6 * 1024
         const val LOW_RAM_ICON_CACHE_KB = 3 * 1024
         const val RUNNING_LOW_ICON_CACHE_KB = 2 * 1024
-        const val BACKGROUND_ICON_CACHE_KB = 1 * 1024
+        const val HIDDEN_ICON_CACHE_KB = 3 * 1024
+        const val LOW_RAM_HIDDEN_ICON_CACHE_KB = 1 * 1024
+        const val CRITICAL_ICON_CACHE_KB = 1 * 1024
+        const val ICON_LOAD_PARALLELISM = 2
+        const val LOW_RAM_ICON_LOAD_PARALLELISM = 1
         const val FOREGROUND_REFRESH_INTERVAL_MS = 15_000L
         // AppIcon 側の角丸比率(size*0.2237f)と揃える。
         const val ICON_CORNER_RATIO = 0.2237f
