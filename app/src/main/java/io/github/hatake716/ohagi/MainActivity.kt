@@ -214,9 +214,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchAppWithSplitNotification(app: AppRef, canNotify: Boolean) {
-        val notificationPosted = canNotify && SplitLaunchNotification.post(this, app)
-        if (!LaunchUtils.launch(this, app) && notificationPosted) {
-            SplitLaunchNotification.cancel(this)
+        // 起動Intentを最優先でOSへ渡す。通知の組み立て/Binder呼び出しは、
+        // 画面遷移開始後にアプリプロセスの直列IO workerで行う。
+        if (!LaunchUtils.launch(this, app)) return
+        if (canNotify) {
+            val appLabel = (application as OhagiApp).graph.appRepository.labelOf(app)
+            SplitLaunchNotification.postAsync(applicationContext, app, appLabel)
         }
     }
 

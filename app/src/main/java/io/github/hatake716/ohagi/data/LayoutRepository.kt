@@ -136,7 +136,7 @@ class LayoutRepository(context: Context) {
                 .distinctBy(WidgetPlacement::appWidgetId)
                 .map { it.copy(heightDp = it.heightDp.coerceIn(96, 480)) },
             version = LayoutState.CURRENT_VERSION,
-        )
+        ).withoutEmptyAdditionalHomePages()
     }
 
     /**
@@ -271,16 +271,6 @@ class LayoutRepository(context: Context) {
     }
 
     // ---- ホームページ操作 ----
-
-    /** Appライブラリ直前へ空のホームページを1枚追加する。 */
-    fun appendHomePage() {
-        update(LayoutState::appendEmptyHomePage)
-    }
-
-    /** D&Dがキャンセルされた時だけ、末尾に残った空ページを取り除く。 */
-    fun trimTrailingEmptyHomePages() {
-        update(LayoutState::withoutTrailingEmptyHomePages)
-    }
 
     /** Pager再構成中のフォールバックtargetから、アプリ1件を目的ページへ移す。 */
     fun moveAppToHomePage(page: Int, source: AppMoveSource) {

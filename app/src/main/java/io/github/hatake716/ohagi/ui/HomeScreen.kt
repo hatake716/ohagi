@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
@@ -60,6 +61,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppInfo
@@ -73,9 +75,13 @@ import io.github.hatake716.ohagi.data.homeGlobalIndex
 import io.github.hatake716.ohagi.data.homePage
 import io.github.hatake716.ohagi.data.homePageCount
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
+import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
+import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
+import io.github.hatake716.ohagi.ui.common.appLibraryPrefetchBudget
+import io.github.hatake716.ohagi.ui.common.buildAppLibraryIconPrefetchRequests
 import io.github.hatake716.ohagi.ui.dock.DockBar
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.isOhagiRemovableDrag
@@ -89,6 +95,8 @@ import io.github.hatake716.ohagi.ui.widget.WidgetPage
 import io.github.hatake716.ohagi.ui.widget.WidgetPickerSheet
 import io.github.hatake716.ohagi.util.LaunchUtils
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -122,15 +130,35 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val layout by graph.layoutRepository.state.collectAsStateWithLifecycle()
-    val apps by graph.appRepository.apps.collectAsStateWithLifecycle()
-    val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
+    val latestLayout by graph.layoutRepository.state.collectAsStateWithLifecycle()
+    val latestApps by graph.appRepository.apps.collectAsStateWithLifecycle()
 
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
+    var layout by remember { mutableStateOf(latestLayout) }
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_HOME_PAGER_INDEX,
         pageCount = { layout.homePageCount + STATIC_PAGE_COUNT },
     )
+    // DataStoreの初回読込や直前操作の書込み完了も、指が動いている間は
+    // Pagerのページ数・全セルを差し替えず、settle後に一度で反映する。
+    LaunchedEffect(latestLayout, pagerState) {
+        if (pagerState.isScrollInProgress) {
+            snapshotFlow { pagerState.isScrollInProgress }
+                .first { scrolling -> !scrolling }
+        }
+        layout = latestLayout
+    }
+    var apps by remember { mutableStateOf(latestApps) }
+    // PackageManagerの全件結果がPager操作中に届いても、ホームとAppライブラリを
+    // 同じフレームで総入れ替えしない。指が止まった直後に最新一覧へ追従する。
+    LaunchedEffect(latestApps, pagerState) {
+        if (pagerState.isScrollInProgress) {
+            snapshotFlow { pagerState.isScrollInProgress }
+                .first { scrolling -> !scrolling }
+        }
+        apps = latestApps
+    }
+    val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
     val appLibraryPage = layout.homePageCount + 1
 
     // HOME再押下ではオーバーレイを閉じ、必ず1枚目のホームへ戻る。
@@ -161,25 +189,94 @@ fun HomeScreen(
     var rootBounds by remember { mutableStateOf<Rect?>(null) }
     var edgeTransitionInProgress by remember { mutableStateOf(false) }
     var edgeDestinationHomePage by remember { mutableStateOf<Int?>(null) }
-    var requestedHomePageCount by remember { mutableStateOf<Int?>(null) }
     var createdPageDuringDrag by remember { mutableStateOf(false) }
     var edgeDropCommitted by remember { mutableStateOf(false) }
+    var edgeDropBaselineHome by remember { mutableStateOf<List<HomeItem?>?>(null) }
     var pageLimitToastShown by remember { mutableStateOf(false) }
     val repo = graph.layoutRepository
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
-    val edgeZonePx = with(LocalDensity.current) { HOME_PAGE_EDGE_ZONE.toPx() }
+    val density = LocalDensity.current
+    val edgeZonePx = with(density) { HOME_PAGE_EDGE_ZONE.toPx() }
+    val appLibraryIconRequests = remember(apps, density.density) {
+        val prefetchBudget = appLibraryPrefetchBudget(graph.appRepository.isLowRamDevice)
+        buildAppLibraryIconPrefetchRequests(
+            apps = apps,
+            previewIconSizePx = with(density) {
+                APP_LIBRARY_PREVIEW_ICON_SIZE.roundToPx()
+            },
+            miniIconSizePx = with(density) {
+                APP_LIBRARY_MINI_ICON_SIZE.roundToPx()
+            },
+            categoryLimit = prefetchBudget.fullCategoryCount,
+            partialCategoryLimit = prefetchBudget.partialCategoryCount,
+        )
+    }
+    // 初期ホームが落ち着いた時だけ、Appライブラリ上端の画像を画面外で用意する。
+    // onPauseでJobを止めるため、通常のアプリ起動とCPUを奪い合わない。
+    LifecycleResumeEffect(appLibraryIconRequests, pagerState) {
+        val prefetchJob = scope.launch {
+            if (appLibraryIconRequests.isEmpty()) return@launch
+            snapshotFlow {
+                pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX &&
+                    !pagerState.isScrollInProgress &&
+                    overlay == Overlay.None &&
+                    activeDrag == null
+            }.collectLatest { idleOnHome ->
+                if (idleOnHome) {
+                    // collectLatestにより、指が動き始めた時点で先読みをcancelする。
+                    // 進行中の1画像だけを終えた後、Pagerの表示要求へworkerを譲る。
+                    delay(APP_LIBRARY_PREFETCH_DELAY_MS)
+                    if (
+                        pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX &&
+                        !pagerState.isScrollInProgress &&
+                        overlay == Overlay.None &&
+                        activeDrag == null
+                    ) {
+                        graph.appRepository.prefetchIcons(appLibraryIconRequests)
+                    }
+                }
+            }
+        }
+        onPauseOrDispose { prefetchJob.cancel() }
+    }
 
-    LaunchedEffect(layout.homePageCount, requestedHomePageCount) {
-        val expected = requestedHomePageCount ?: return@LaunchedEffect
-        if (layout.homePageCount >= expected) {
-            // pager上ではホームページ番号とindexが一致する（0はWidgetページ）。
+    LaunchedEffect(layout.home, edgeDropCommitted, edgeDropBaselineHome) {
+        val baseline = edgeDropBaselineHome ?: return@LaunchedEffect
+        if (edgeDropCommitted && layout.home != baseline) {
+            // 元の追加ページが空になって同時回収されても、生成後の最終ホームを表示する。
             pagerState.scrollToPage(layout.homePageCount)
-            requestedHomePageCount = null
             edgeDestinationHomePage = null
             edgeDropCommitted = false
+            edgeDropBaselineHome = null
             delay(HOME_PAGE_EDGE_COOLDOWN_MS)
             edgeTransitionInProgress = false
         }
+    }
+
+    // 空になった中間／末尾ページが消えた時も、表示していた論理ページを維持する。
+    LaunchedEffect(pagerState) {
+        var previousPage = pagerState.currentPage
+        var previousHomePageCount = layout.homePageCount
+        snapshotFlow { pagerState.currentPage to layout.homePageCount }
+            .collect { (currentPage, currentHomePageCount) ->
+                if (currentHomePageCount < previousHomePageCount) {
+                    val destination = when {
+                        previousPage == previousHomePageCount + 1 -> currentHomePageCount + 1
+                        previousPage in 1..previousHomePageCount ->
+                            previousPage.coerceAtMost(currentHomePageCount)
+                        else -> currentPage.coerceIn(0, currentHomePageCount + 1)
+                    }
+                    if (destination != currentPage) {
+                        pagerState.animateScrollToPage(destination)
+                        previousPage = destination
+                    } else {
+                        previousPage = currentPage
+                    }
+                } else {
+                    previousPage = currentPage
+                }
+                previousHomePageCount = currentHomePageCount
+            }
     }
 
     LaunchedEffect(activeDrag) {
@@ -187,7 +284,7 @@ fun HomeScreen(
             edgeTransitionInProgress = false
             if (!edgeDropCommitted) {
                 edgeDestinationHomePage = null
-                requestedHomePageCount = null
+                edgeDropBaselineHome = null
             }
             pageLimitToastShown = false
         }
@@ -386,8 +483,11 @@ fun HomeScreen(
         payload: DragPayload,
     ): Boolean {
         appMoveSource(payload)?.let { source ->
+            if (createdPageDuringDrag) {
+                edgeDropBaselineHome = layout.home
+                edgeDropCommitted = true
+            }
             repo.moveAppToHomePage(destinationPage, source)
-            edgeDropCommitted = requestedHomePageCount != null
             return true
         }
         val accepted = when (payload) {
@@ -409,7 +509,10 @@ fun HomeScreen(
 
             else -> false
         }
-        if (accepted) edgeDropCommitted = requestedHomePageCount != null
+        if (accepted && createdPageDuringDrag) {
+            edgeDropBaselineHome = layout.home
+            edgeDropCommitted = true
+        }
         return accepted
     }
 
@@ -452,7 +555,6 @@ fun HomeScreen(
         if (createdPageDuringDrag && !atRightEdge) {
             createdPageDuringDrag = false
             edgeDestinationHomePage = null
-            requestedHomePageCount = null
         }
 
         when {
@@ -474,7 +576,6 @@ fun HomeScreen(
                     layout.homePageCount < io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT -> {
                         createdPageDuringDrag = true
                         edgeDestinationHomePage = layout.homePageCount
-                        requestedHomePageCount = layout.homePageCount + 1
                         // OSのDROPまでは現在のセルtargetを維持し、DROP内で生成と移動を原子的に行う。
                         edgeTransitionInProgress = false
                     }
@@ -528,23 +629,7 @@ fun HomeScreen(
     fun endDragSession() {
         trashHovered = false
         activeDrag = null
-        if (createdPageDuringDrag) {
-            createdPageDuringDrag = false
-            val pageCountBeforeCleanup = maxOf(
-                layout.homePageCount,
-                (edgeDestinationHomePage ?: -1) + 1,
-            )
-            scope.launch {
-                // onDropのDataStore更新を先に完了させ、空のままの追加ページだけを除去する。
-                delay(700)
-                repo.trimTrailingEmptyHomePages()
-                delay(700)
-                val remainingPages = repo.state.value.homePageCount
-                if (remainingPages < pageCountBeforeCleanup && pagerState.currentPage > remainingPages) {
-                    pagerState.scrollToPage(remainingPages)
-                }
-            }
-        }
+        createdPageDuringDrag = false
     }
 
     // HomeGridの各セルがPager再構成で入れ替わっても、この親targetはセッション中存続する。
@@ -1145,6 +1230,7 @@ private val HOME_GRID_BOTTOM_RESERVED = 104.dp
 private val HOME_PAGE_EDGE_ZONE = 36.dp
 private val HOME_PAGE_INDICATOR_BOTTOM = 100.dp
 private const val HOME_PAGE_EDGE_COOLDOWN_MS = 420L
+private const val APP_LIBRARY_PREFETCH_DELAY_MS = 260L
 private const val WIDGET_PAGER_INDEX = 0
 private const val PRIMARY_HOME_PAGER_INDEX = 1
 private const val STATIC_PAGE_COUNT = 2

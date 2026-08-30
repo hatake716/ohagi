@@ -54,7 +54,7 @@ import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosSearchField
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
-import io.github.hatake716.ohagi.ui.common.animateIosPressScale
+import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.common.appCategoryTitle
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
@@ -199,28 +199,35 @@ private fun DrawerCell(
     onDragStarted: (DragPayload) -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val scale = animateIosPressScale(
+    var isDragging by remember { mutableStateOf(false) }
+    val dragVisual = rememberIosDragVisualState(
         pressed = pressed,
-        label = "drawerCellScale",
+        isDragging = isDragging,
+        label = "drawerCell",
     )
     val haptic = LocalHapticFeedback.current
 
-    val icon by rememberAppIconBitmap(app.ref)
+    val icon by rememberAppIconBitmap(app.ref, DRAWER_ICON_SIZE)
     val payload = remember(app.ref) { DragPayload.FromDrawer(app.ref) }
 
     Box(
         modifier = Modifier
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = dragVisual.scale
+                scaleY = dragVisual.scale
+                alpha = dragVisual.alpha
             }
             .clip(RoundedCornerShape(18.dp))
             .ohagiDragSource(
                 payload = payload,
                 icon = icon,
                 onTap = onTap,
-                onPressChanged = { pressed = it },
+                onPressChanged = {
+                    pressed = it
+                    if (!it) isDragging = false
+                },
                 onDragStarted = {
+                    isDragging = true
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onDragStarted(payload)
                 },
@@ -228,7 +235,7 @@ private fun DrawerCell(
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            AppIconImage(icon = icon, size = 56.dp)
+            AppIconImage(icon = icon, size = DRAWER_ICON_SIZE)
             Spacer(Modifier.height(6.dp))
             // iOS ホーム風: アイコン下に最大 2 行のラベル。半透明背景で読めるよう白系。
             Text(
@@ -259,6 +266,8 @@ private fun DrawerCell(
         )
     }
 }
+
+private val DRAWER_ICON_SIZE = 56.dp
 
 /** セル操作メニューのヘッダー（アイコン + ラベル）。 */
 @Composable

@@ -47,7 +47,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -71,8 +70,8 @@ import io.github.hatake716.ohagi.data.FolderLocation
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IOS_SELECTION_BLUE
 import io.github.hatake716.ohagi.ui.common.IosGlassIconButton
-import io.github.hatake716.ohagi.ui.common.animateIosPressScale
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
+import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.folderLocationOrNull
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
@@ -413,10 +412,11 @@ private fun FolderAppCell(
     }
     val isDragging = activeDrag == payload
 
-    val scale = animateIosPressScale(
-        pressed = pressed || dropHovered,
-        pressedScale = if (dropHovered) 1.08f else 0.94f,
-        label = "folderAppScale",
+    val dragVisual = rememberIosDragVisualState(
+        pressed = pressed,
+        isDragging = isDragging,
+        dropHovered = dropHovered,
+        label = "folderApp",
     )
     // 通常表示中は無限アニメーションをcompositionから外し、編集時だけ揺らす。
     val wiggle = if (editMode) {
@@ -454,6 +454,7 @@ private fun FolderAppCell(
                 else -> null
             } ?: return@rememberOhagiDropTarget false
             onReorder(fromIndex, appIndex)
+            dragVisual.settle(false)
             true
         },
     )
@@ -462,10 +463,10 @@ private fun FolderAppCell(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(92.dp)
-            .alpha(if (isDragging) 0.18f else 1f)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = dragVisual.scale
+                scaleY = dragVisual.scale
+                alpha = dragVisual.alpha
                 rotationZ = if (editMode) wiggle else 0f
             }
             .clip(RoundedCornerShape(18.dp))

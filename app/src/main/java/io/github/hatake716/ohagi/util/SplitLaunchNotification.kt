@@ -6,7 +6,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
@@ -15,6 +14,11 @@ import androidx.core.content.ContextCompat
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.SplitLaunchActivity
 import io.github.hatake716.ohagi.data.AppRef
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * ohagiから通常起動したアプリを1つ目として、通知に選択導線を表示する。
@@ -26,7 +30,15 @@ import io.github.hatake716.ohagi.data.AppRef
  */
 object SplitLaunchNotification {
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val notificationScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO.limitedParallelism(1),
+    )
+    @Volatile
+    private var channelCreated = false
+
     fun createChannel(context: Context) {
+        if (channelCreated) return
         val manager = context.getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -39,23 +51,19 @@ object SplitLaunchNotification {
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
         manager.createNotificationChannel(channel)
+        channelCreated = true
     }
 
-    fun appLabel(context: Context, ref: AppRef): String {
-        val packageManager = context.packageManager
-        return try {
-            @Suppress("DEPRECATION")
-            packageManager.getActivityInfo(
-                ComponentName(ref.packageName, ref.className),
-                PackageManager.MATCH_DISABLED_COMPONENTS,
-            ).loadLabel(packageManager).toString()
-        } catch (_: PackageManager.NameNotFoundException) {
-            ref.packageName
+    /** 起動Intentを待たせず、通知更新をアプリ生存期間の直列workerへ送る。 */
+    fun postAsync(context: Context, first: AppRef, firstLabel: String) {
+        val appContext = context.applicationContext
+        notificationScope.launch {
+            post(appContext, first, firstLabel)
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun post(context: Context, first: AppRef): Boolean {
+    private fun post(context: Context, first: AppRef, firstLabel: String): Boolean {
         createChannel(context)
         val manager = context.getSystemService(NotificationManager::class.java)
         if (!canPost(context, manager)) return false
@@ -71,7 +79,6 @@ object SplitLaunchNotification {
             PendingIntent.FLAG_CANCEL_CURRENT or
                 PendingIntent.FLAG_IMMUTABLE,
         )
-        val firstLabel = appLabel(context, first)
         val message = context.getString(R.string.split_notification_text, firstLabel)
         val notification = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
