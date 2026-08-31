@@ -150,6 +150,7 @@ fun SplitAppPickerScreen(
                 selectedCategory = selectedCategory,
                 onCategorySelected = { selectedCategory = it },
                 onPreviewAppClick = { onSelectApp(it.ref) },
+                frequentApps = rankedLaunches,
                 preferredApps = preferredApps,
                 modifier = Modifier
                     .fillMaxWidth()

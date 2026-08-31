@@ -78,6 +78,7 @@ import io.github.hatake716.ohagi.data.preferredAppRefs
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
+import io.github.hatake716.ohagi.ui.common.FREQUENT_APP_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
@@ -202,7 +203,12 @@ fun HomeScreen(
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
     val density = LocalDensity.current
     val edgeZonePx = with(density) { HOME_PAGE_EDGE_ZONE.toPx() }
-    val appLibraryIconRequests = remember(apps, preferredApps, density.density) {
+    val appLibraryIconRequests = remember(
+        apps,
+        rankedLaunches,
+        preferredApps,
+        density.density,
+    ) {
         val prefetchBudget = appLibraryPrefetchBudget(graph.appRepository.isLowRamDevice)
         buildAppLibraryIconPrefetchRequests(
             apps = apps,
@@ -211,6 +217,10 @@ fun HomeScreen(
             },
             miniIconSizePx = with(density) {
                 APP_LIBRARY_MINI_ICON_SIZE.roundToPx()
+            },
+            frequentApps = rankedLaunches,
+            frequentIconSizePx = with(density) {
+                FREQUENT_APP_ICON_SIZE.roundToPx()
             },
             categoryLimit = prefetchBudget.fullCategoryCount,
             partialCategoryLimit = prefetchBudget.partialCategoryCount,
@@ -834,6 +844,7 @@ fun HomeScreen(
 
                 page == appLibraryPage -> AppDrawer(
                     apps = apps,
+                    frequentApps = rankedLaunches,
                     preferredApps = preferredApps,
                     onLaunch = { app -> openApp(app.ref) },
                     onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
@@ -1120,6 +1131,7 @@ fun HomeScreen(
             }
             AppPickerSheet(
                 apps = apps,
+                frequentApps = rankedLaunches,
                 preferredApps = preferredApps,
                 multiSelect = target is PickTarget.FolderAdd ||
                     target is PickTarget.FolderCreate,

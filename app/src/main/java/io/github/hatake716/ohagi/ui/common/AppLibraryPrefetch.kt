@@ -6,21 +6,32 @@ import io.github.hatake716.ohagi.data.AppInfo
 import io.github.hatake716.ohagi.data.AppRef
 
 /**
- * Appライブラリ上端で直ちに見えるカテゴリーカードのアイコンだけを先読みする。
+ * Appライブラリ上端で直ちに見える「よく使うアプリ」とカテゴリーカードを先読みする。
  *
- * 全アプリを先読みするとLRUを押し出してRAMも増えるため、完全表示カードは
- * 最初の3個を大サイズ、続く4個をミニサイズとし、下端の部分表示カードは
- * 上段2個だけに限定する。
+ * 全アプリを先読みするとLRUを押し出してRAMも増えるため、頻出欄は最大8個、
+ * 完全表示カードは最初の3個を大サイズ、続く4個をミニサイズとし、下端の
+ * 部分表示カードは上段2個だけに限定する。
  */
 internal fun buildAppLibraryIconPrefetchRequests(
     apps: List<AppInfo>,
     previewIconSizePx: Int,
     miniIconSizePx: Int,
+    frequentApps: List<AppRef> = emptyList(),
+    frequentIconSizePx: Int = previewIconSizePx,
     categoryLimit: Int = APP_LIBRARY_PREFETCH_CATEGORY_COUNT,
     partialCategoryLimit: Int = 0,
     preferredApps: List<AppRef> = emptyList(),
 ): List<AppIconRequest> {
-    if (apps.isEmpty() || categoryLimit + partialCategoryLimit <= 0) return emptyList()
+    if (apps.isEmpty()) return emptyList()
+
+    val resolvedFrequentApps = resolvePreferredApps(
+        apps = apps,
+        preferredApps = frequentApps,
+        limit = FREQUENT_APP_LIMIT,
+    )
+    if (resolvedFrequentApps.isEmpty() && categoryLimit + partialCategoryLimit <= 0) {
+        return emptyList()
+    }
 
     val appsByCategory = apps.groupBy { it.category }
     val categoryApps = AppCategory.entries
@@ -35,6 +46,9 @@ internal fun buildAppLibraryIconPrefetchRequests(
         }
         .toList()
     return buildList {
+        resolvedFrequentApps.forEach { app ->
+            add(AppIconRequest(app.ref, frequentIconSizePx))
+        }
         categoryApps.take(categoryLimit.coerceAtLeast(0)).forEach { appsInCategory ->
             appsInCategory.take(3).forEach { app ->
                 add(AppIconRequest(app.ref, previewIconSizePx))
@@ -73,6 +87,6 @@ internal fun appLibraryPrefetchBudget(isLowRamDevice: Boolean): AppLibraryPrefet
         )
     }
 
-internal const val APP_LIBRARY_PREFETCH_CATEGORY_COUNT = 6
+internal const val APP_LIBRARY_PREFETCH_CATEGORY_COUNT = 4
 internal const val APP_LIBRARY_PARTIAL_PREFETCH_CATEGORY_COUNT = 2
-internal const val APP_LIBRARY_LOW_RAM_PREFETCH_CATEGORY_COUNT = 4
+internal const val APP_LIBRARY_LOW_RAM_PREFETCH_CATEGORY_COUNT = 2

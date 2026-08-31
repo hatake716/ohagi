@@ -68,8 +68,8 @@ class AppLibraryPrefetchTest {
 
     @Test
     fun categoryBudgetUsesSmallerViewportOnLowRamDevices() {
-        assertEquals(AppLibraryPrefetchBudget(6, 2), appLibraryPrefetchBudget(false))
-        assertEquals(AppLibraryPrefetchBudget(4, 0), appLibraryPrefetchBudget(true))
+        assertEquals(AppLibraryPrefetchBudget(4, 2), appLibraryPrefetchBudget(false))
+        assertEquals(AppLibraryPrefetchBudget(2, 0), appLibraryPrefetchBudget(true))
     }
 
     @Test
@@ -89,6 +89,28 @@ class AppLibraryPrefetchTest {
                 .map { AppIconRequest(it.ref, 192) } +
                 listOf(social[1], social[3], social[4], social[5])
                     .map { AppIconRequest(it.ref, 96) },
+            requests,
+        )
+    }
+
+    @Test
+    fun frequentSectionIsPrefetchedBeforeCategoryCardsAtItsDisplaySize() {
+        val social = (0..7).map { app("social-$it", AppCategory.SOCIAL) }
+
+        val requests = buildAppLibraryIconPrefetchRequests(
+            apps = social,
+            frequentApps = listOf(social[6].ref, social[2].ref),
+            frequentIconSizePx = 144,
+            previewIconSizePx = 192,
+            miniIconSizePx = 96,
+            categoryLimit = 1,
+        )
+
+        assertEquals(
+            listOf(social[6], social[2])
+                .map { AppIconRequest(it.ref, 144) } +
+                social.take(3).map { AppIconRequest(it.ref, 192) } +
+                social.drop(3).take(4).map { AppIconRequest(it.ref, 96) },
             requests,
         )
     }

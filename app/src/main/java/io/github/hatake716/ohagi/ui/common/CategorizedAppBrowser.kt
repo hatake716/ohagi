@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
@@ -45,6 +46,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -60,7 +62,7 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 /**
  * 通常ドロワーと全アプリピッカーで共有する、iOS App Library 風ブラウザー。
  *
- * - 通常時: 2列の自動カテゴリーカード
+ * - 通常時: よく使うアプリの独立カード + 2列の自動カテゴリーカード
  * - カテゴリー選択時: そのカテゴリーだけの4列グリッド
  * - 検索時: 全カテゴリー横断の4列グリッド
  */
@@ -72,6 +74,7 @@ fun CategorizedAppBrowser(
     onCategorySelected: (AppCategory?) -> Unit,
     onPreviewAppClick: (AppInfo) -> Unit,
     modifier: Modifier = Modifier,
+    frequentApps: List<AppRef> = emptyList(),
     preferredApps: List<AppRef> = emptyList(),
     selectedApps: Set<AppRef> = emptySet(),
     appCell: @Composable (AppInfo) -> Unit,
@@ -107,18 +110,12 @@ fun CategorizedAppBrowser(
         )
 
         else -> {
-            val groups = remember(apps, preferredApps) {
-                val appsByCategory = apps.groupBy { it.category }
-                AppCategory.entries.mapNotNull { category ->
-                    appsByCategory[category]
-                        ?.takeIf { it.isNotEmpty() }
-                        ?.let { groupedApps ->
-                            category to prioritizeAppsForPreview(
-                                apps = groupedApps,
-                                preferredApps = preferredApps,
-                            )
-                        }
-                }
+            val overview = remember(apps, frequentApps, preferredApps) {
+                buildAppBrowserOverviewContent(
+                    apps = apps,
+                    frequentAppRefs = frequentApps,
+                    preferredApps = preferredApps,
+                )
             }
             // カードごとのBoxWithConstraintsは、Pagerへ入る最初のフレームで
             // 可視カード数だけSubcomposeを発生させる。グリッド幅から1回だけ
@@ -150,8 +147,21 @@ fun CategorizedAppBrowser(
                     verticalArrangement = Arrangement.spacedBy(CATEGORY_GRID_GAP),
                     modifier = Modifier.fillMaxSize(),
                 ) {
+                    if (overview.frequentApps.isNotEmpty()) {
+                        item(
+                            key = "frequent_apps",
+                            span = { GridItemSpan(maxLineSpan) },
+                            contentType = "frequent_apps",
+                        ) {
+                            FrequentAppsCard(
+                                apps = overview.frequentApps,
+                                selectedApps = selectedApps,
+                                onAppClick = onPreviewAppClick,
+                            )
+                        }
+                    }
                     items(
-                        items = groups,
+                        items = overview.categoryGroups,
                         key = { it.first.name },
                         contentType = { "category" },
                     ) { (category, groupedApps) ->
@@ -168,6 +178,134 @@ fun CategorizedAppBrowser(
                 }
             }
         }
+    }
+}
+
+/** 履歴上位を通常カテゴリーから独立させ、必ず見出し付きで表示する。 */
+@Composable
+private fun FrequentAppsCard(
+    apps: List<AppInfo>,
+    selectedApps: Set<AppRef>,
+    onAppClick: (AppInfo) -> Unit,
+) {
+    val visibleApps = remember(apps) { apps.take(FREQUENT_APP_LIMIT) }
+    val appRows = remember(visibleApps) { visibleApps.chunked(FREQUENT_APP_COLUMNS) }
+    val density = LocalDensity.current
+    val iconRequests = remember(visibleApps, density.density) {
+        val iconSizePx = with(density) { FREQUENT_APP_ICON_SIZE.roundToPx() }
+        visibleApps.map { app -> AppIconRequest(app.ref, iconSizePx) }
+    }
+    val icons by rememberRequestedAppIconBitmaps(iconRequests)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.White.copy(alpha = 0.105f))
+            .border(
+                width = 0.5.dp,
+                color = Color.White.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(24.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.frequent_apps_title),
+            color = Kome,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        appRows.forEachIndexed { rowIndex, rowApps ->
+            if (rowIndex > 0) Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                repeat(FREQUENT_APP_COLUMNS) { column ->
+                    val index = rowIndex * FREQUENT_APP_COLUMNS + column
+                    val app = rowApps.getOrNull(column)
+                    if (app == null) {
+                        Spacer(Modifier.weight(1f))
+                    } else {
+                        FrequentAppCell(
+                            app = app,
+                            icon = icons.getOrNull(index),
+                            selected = app.ref in selectedApps,
+                            onClick = { onAppClick(app) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FrequentAppCell(
+    app: AppInfo,
+    icon: ImageBitmap?,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interactionSource = remember(app.ref) { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale = animateIosPressScale(
+        pressed = pressed,
+        label = "frequentAppScale",
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .semantics {
+                contentDescription = app.label
+                role = Role.Button
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(FREQUENT_APP_ICON_SIZE)
+                .drawWithContent {
+                    scale(scaleX = scale, scaleY = scale) {
+                        this@drawWithContent.drawContent()
+                    }
+                },
+        ) {
+            AppIconImage(
+                icon = icon,
+                size = FREQUENT_APP_ICON_SIZE,
+            )
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = IOS_SELECTION_BLUE,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(Ink),
+                )
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(
+            text = app.label,
+            color = Kome,
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -482,11 +620,13 @@ private fun MiniPreviewCluster(
 }
 
 internal val APP_LIBRARY_PREVIEW_ICON_SIZE = 66.dp
+internal val FREQUENT_APP_ICON_SIZE = 56.dp
 private val APP_LIBRARY_PREVIEW_ICON_GAP = 10.dp
 internal val APP_LIBRARY_MINI_ICON_SIZE = 28.dp
 private val APP_LIBRARY_MINI_ICON_GAP = 4.dp
 private val CATEGORY_GRID_HORIZONTAL_PADDING = 12.dp
 private val CATEGORY_GRID_GAP = 12.dp
 private val CATEGORY_CARD_HORIZONTAL_PADDING = 12.dp
+private const val FREQUENT_APP_COLUMNS = 4
 
 internal val IOS_SELECTION_BLUE = Color(0xFF0A84FF)

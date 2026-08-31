@@ -71,6 +71,7 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 @Composable
 fun AppDrawer(
     apps: List<AppInfo>,
+    frequentApps: List<AppRef>,
     preferredApps: List<AppRef>,
     onLaunch: (AppInfo) -> Unit,
     onAddToDock: (AppInfo) -> Unit,
@@ -155,6 +156,7 @@ fun AppDrawer(
             selectedCategory = selectedCategory,
             onCategorySelected = { selectedCategory = it },
             onPreviewAppClick = onLaunch,
+            frequentApps = frequentApps,
             preferredApps = preferredApps,
             modifier = Modifier
                 .fillMaxWidth()

@@ -27,6 +27,7 @@
     <string name="picker_split_first_app">1つ目: %1$s</string>
     <string name="search_apps_hint">アプリを検索</string>
     <string name="drawer_add_to_dock">ドックに追加</string>
+    <string name="frequent_apps_title">よく使うアプリ</string>
 
     <!-- 自動カテゴリー -->
     <string name="category_social">ソーシャル</string>
