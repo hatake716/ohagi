@@ -79,3 +79,36 @@ internal fun LayoutState.withWidgetMoved(appWidgetId: Int, direction: Int): Layo
         },
     )
 }
+
+/** 旧JSONの全幅指定を保ちつつ、破損値や画面外サイズを安全な永続範囲へ収める。 */
+internal fun WidgetPlacement.withValidatedSize(): WidgetPlacement = copy(
+    widthDp = if (widthDp == WidgetPlacement.MATCH_PARENT_WIDTH_DP) {
+        WidgetPlacement.MATCH_PARENT_WIDTH_DP
+    } else {
+        widthDp.coerceIn(
+            WidgetPlacement.MIN_WIDGET_WIDTH_DP,
+            WidgetPlacement.MAX_WIDGET_WIDTH_DP,
+        )
+    },
+    heightDp = heightDp.coerceIn(
+        WidgetPlacement.MIN_WIDGET_HEIGHT_DP,
+        WidgetPlacement.MAX_WIDGET_HEIGHT_DP,
+    ),
+)
+
+/** 指定ウィジェットだけをリサイズし、ID・提供元・並び順を変更しない。 */
+internal fun LayoutState.withWidgetResized(
+    appWidgetId: Int,
+    widthDp: Int,
+    heightDp: Int,
+): LayoutState {
+    val index = widgets.indexOfFirst { it.appWidgetId == appWidgetId }
+    if (index < 0) return this
+    val resized = widgets[index]
+        .copy(widthDp = widthDp, heightDp = heightDp)
+        .withValidatedSize()
+    if (resized == widgets[index]) return this
+    return copy(
+        widgets = widgets.toMutableList().apply { this[index] = resized },
+    )
+}

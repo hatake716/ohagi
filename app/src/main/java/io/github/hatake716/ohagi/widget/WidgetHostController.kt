@@ -6,9 +6,11 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.util.Log
+import android.util.SizeF
 import io.github.hatake716.ohagi.data.WidgetPlacement
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
@@ -127,32 +129,33 @@ class WidgetHostController(context: Context) {
     fun bindingOptions(context: Context, heightDp: Int): Bundle {
         val widthDp = (context.resources.displayMetrics.widthPixels /
             context.resources.displayMetrics.density).roundToInt() - HORIZONTAL_MARGIN_DP
-        return Bundle().apply {
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp.coerceAtLeast(1))
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp.coerceAtLeast(1))
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
-            putInt(
-                AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
-                AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
-            )
-        }
+        return sizeOptions(widthDp.coerceAtLeast(1), heightDp)
     }
 
     fun updateSize(appWidgetId: Int, widthDp: Int, heightDp: Int) {
         val size = WidgetSize(widthDp, heightDp)
         if (lastWidgetSizes[appWidgetId] == size) return
-        val options = Bundle().apply {
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
-            putInt(
-                AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
-                AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
-            )
+        val options = sizeOptions(widthDp, heightDp)
+        runCatching {
+            val hostView = reusableViews[appWidgetId]?.get()
+            if (hostView == null) {
+                manager.updateAppWidgetOptions(appWidgetId, options)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                hostView.updateAppWidgetSize(
+                    options,
+                    listOf(SizeF(widthDp.toFloat(), heightDp.toFloat())),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                hostView.updateAppWidgetSize(
+                    options,
+                    widthDp,
+                    heightDp,
+                    widthDp,
+                    heightDp,
+                )
+            }
         }
-        runCatching { manager.updateAppWidgetOptions(appWidgetId, options) }
             .onSuccess { lastWidgetSizes[appWidgetId] = size }
             .onFailure {
                 Log.w(TAG, "ウィジェットサイズ更新に失敗しました: $appWidgetId", it)
@@ -166,8 +169,88 @@ class WidgetHostController(context: Context) {
             appWidgetId = appWidgetId,
             providerPackage = info.provider.packageName,
             providerClass = info.provider.className,
+            widthDp = WidgetPlacement.MATCH_PARENT_WIDTH_DP,
             heightDp = providerHeightDp.coerceIn(MIN_WIDGET_HEIGHT_DP, MAX_WIDGET_HEIGHT_DP),
         )
+    }
+
+    /** プロバイダーが宣言したresizeModeとdp制約を、現在の表示可能幅へ変換する。 */
+    fun resizeBounds(
+        info: AppWidgetProviderInfo,
+        availableWidthDp: Int,
+    ): WidgetResizeBounds {
+        val density = appContext.resources.displayMetrics.density
+        fun pxToDp(px: Int): Int = (px / density).roundToInt().coerceAtLeast(1)
+
+        val horizontalDeclared =
+            info.resizeMode and AppWidgetProviderInfo.RESIZE_HORIZONTAL != 0
+        val verticalDeclared =
+            info.resizeMode and AppWidgetProviderInfo.RESIZE_VERTICAL != 0
+        val defaultWidthDp = pxToDp(info.minWidth)
+        val defaultHeightDp = pxToDp(info.minHeight)
+        val declaredMinWidthDp = info.minResizeWidth
+            .takeIf { it > 0 }
+            ?.let(::pxToDp)
+        val declaredMinHeightDp = info.minResizeHeight
+            .takeIf { it > 0 }
+            ?.let(::pxToDp)
+
+        val minimumWidthDp = if (horizontalDeclared) {
+            declaredMinWidthDp ?: defaultWidthDp
+        } else {
+            defaultWidthDp
+        }.coerceAtLeast(WidgetPlacement.MIN_WIDGET_WIDTH_DP)
+        val minimumHeightDp = if (verticalDeclared) {
+            declaredMinHeightDp ?: defaultHeightDp
+        } else {
+            defaultHeightDp
+        }.coerceAtLeast(WidgetPlacement.MIN_WIDGET_HEIGHT_DP)
+
+        val declaredMaxWidthDp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            info.maxResizeWidth.takeIf { it > 0 }?.let(::pxToDp)
+        } else {
+            null
+        }
+        val declaredMaxHeightDp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            info.maxResizeHeight.takeIf { it > 0 }?.let(::pxToDp)
+        } else {
+            null
+        }
+        val availableWidth = availableWidthDp.coerceAtLeast(1)
+        val maximumWidthDp = declaredMaxWidthDp
+            ?.coerceAtMost(availableWidth)
+            ?: availableWidth
+        val maximumHeightDp = declaredMaxHeightDp
+            ?.coerceAtMost(WidgetPlacement.MAX_WIDGET_HEIGHT_DP)
+            ?: WidgetPlacement.MAX_WIDGET_HEIGHT_DP
+
+        val minWidthDp = minimumWidthDp.coerceAtMost(maximumWidthDp)
+        val minHeightDp = minimumHeightDp.coerceAtMost(maximumHeightDp)
+        return WidgetResizeBounds(
+            canResizeHorizontally = horizontalDeclared && minWidthDp < maximumWidthDp,
+            canResizeVertically = verticalDeclared && minHeightDp < maximumHeightDp,
+            minWidthDp = minWidthDp,
+            maxWidthDp = maximumWidthDp,
+            minHeightDp = minHeightDp,
+            maxHeightDp = maximumHeightDp,
+        )
+    }
+
+    private fun sizeOptions(widthDp: Int, heightDp: Int): Bundle = Bundle().apply {
+        putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
+        putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
+        putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+        putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+        putInt(
+            AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
+            AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            putParcelableArrayList(
+                AppWidgetManager.OPTION_APPWIDGET_SIZES,
+                arrayListOf(SizeF(widthDp.toFloat(), heightDp.toFloat())),
+            )
+        }
     }
 
     fun componentOf(placement: WidgetPlacement): ComponentName = ComponentName(
@@ -188,3 +271,12 @@ class WidgetHostController(context: Context) {
         val heightDp: Int,
     )
 }
+
+data class WidgetResizeBounds(
+    val canResizeHorizontally: Boolean,
+    val canResizeVertically: Boolean,
+    val minWidthDp: Int,
+    val maxWidthDp: Int,
+    val minHeightDp: Int,
+    val maxHeightDp: Int,
+)

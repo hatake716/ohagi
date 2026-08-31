@@ -134,7 +134,7 @@ class LayoutRepository(context: Context) {
                         placement.providerClass.isNotBlank()
                 }
                 .distinctBy(WidgetPlacement::appWidgetId)
-                .map { it.copy(heightDp = it.heightDp.coerceIn(96, 480)) },
+                .map(WidgetPlacement::withValidatedSize),
             version = LayoutState.CURRENT_VERSION,
         ).withoutEmptyAdditionalHomePages()
     }
@@ -304,6 +304,10 @@ class LayoutRepository(context: Context) {
 
     fun reorderWidget(appWidgetId: Int, direction: Int) {
         update { state -> state.withWidgetMoved(appWidgetId, direction) }
+    }
+
+    fun resizeWidget(appWidgetId: Int, widthDp: Int, heightDp: Int) {
+        update { state -> state.withWidgetResized(appWidgetId, widthDp, heightDp) }
     }
 
     fun pruneInvalidWidgets(validIds: Set<Int>) {

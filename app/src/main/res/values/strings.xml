@@ -66,6 +66,9 @@
     <string name="widget_remove">%1$sを削除</string>
     <string name="widget_move_up">%1$sを上へ移動</string>
     <string name="widget_move_down">%1$sを下へ移動</string>
+    <string name="widget_resize">%1$sのサイズを変更</string>
+    <string name="widget_resize_unavailable">サイズ変更には対応していません</string>
+    <string name="widget_size_value">%1$d × %2$d dp</string>
     <string name="widget_unavailable">このウィジェットは利用できません</string>
     <string name="home_page_description">ホーム %1$d / %2$d</string>
 

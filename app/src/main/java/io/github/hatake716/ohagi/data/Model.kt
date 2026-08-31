@@ -40,11 +40,18 @@ data class WidgetPlacement(
     val appWidgetId: Int,
     val providerPackage: String,
     val providerClass: String,
-    /** ホスト上の表示高。プロバイダー推奨サイズから追加時に決める。 */
+    /** 0は端末幅に追従する全幅。正数はユーザーが決めたホスト上の表示幅。 */
+    val widthDp: Int = MATCH_PARENT_WIDTH_DP,
+    /** ホスト上の表示高。追加時の推奨値またはユーザーのリサイズ結果。 */
     val heightDp: Int = DEFAULT_WIDGET_HEIGHT_DP,
 ) {
     companion object {
+        const val MATCH_PARENT_WIDTH_DP = 0
         const val DEFAULT_WIDGET_HEIGHT_DP = 180
+        const val MIN_WIDGET_WIDTH_DP = 96
+        const val MAX_WIDGET_WIDTH_DP = 1024
+        const val MIN_WIDGET_HEIGHT_DP = 96
+        const val MAX_WIDGET_HEIGHT_DP = 480
     }
 }
 
@@ -97,6 +104,7 @@ data class LayoutState(
     val home: List<HomeItem?> = List(HOME_CELL_COUNT) { null },
     val dock: List<DockItem?> = List(DOCK_SLOT_COUNT) { null },
     val widgets: List<WidgetPlacement> = emptyList(),
+    // v8: ウィジェットの幅と高さをユーザー変更可能にし、サイズを永続化。
     // v7: Dock中央の固定ランチャーボタンを、通常の5番目スロットへ置換。
     // v6: homeを24セル単位の複数ページとして扱い、ウィジェット専用ページを追加。
     // v5: ホームグリッドを 5列×6行から 4列×6行へ変更。
@@ -105,7 +113,7 @@ data class LayoutState(
     val version: Int = CURRENT_VERSION,
 ) {
     companion object {
-        const val CURRENT_VERSION = 7
+        const val CURRENT_VERSION = 8
         const val DOCK_SLOT_COUNT = 5
         const val HOME_COLUMNS = 4
         const val HOME_ROWS = 6

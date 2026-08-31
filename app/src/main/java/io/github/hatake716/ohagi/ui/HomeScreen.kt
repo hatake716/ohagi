@@ -789,6 +789,9 @@ fun HomeScreen(
                     onMoveWidget = { placement, direction ->
                         repo.reorderWidget(placement.appWidgetId, direction)
                     },
+                    onResizeWidget = { placement, widthDp, heightDp ->
+                        repo.resizeWidget(placement.appWidgetId, widthDp, heightDp)
+                    },
                 )
 
                 page in 1..layout.homePageCount -> {

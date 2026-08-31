@@ -3,6 +3,7 @@ package io.github.hatake716.ohagi.ui.widget
 import android.appwidget.AppWidgetHostView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,12 +16,14 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Remove
@@ -34,14 +37,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -52,6 +59,8 @@ import io.github.hatake716.ohagi.ui.common.IOS_SELECTION_BLUE
 import io.github.hatake716.ohagi.ui.common.IosGlassIconButton
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** iOS Today Viewに相当する、Dockを持たない左端のウィジェット専用ページ。 */
 @Composable
@@ -60,6 +69,7 @@ fun WidgetPage(
     onAddWidget: () -> Unit,
     onRemoveWidget: (WidgetPlacement) -> Unit,
     onMoveWidget: (WidgetPlacement, Int) -> Unit,
+    onResizeWidget: (WidgetPlacement, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var editing by remember { mutableStateOf(false) }
@@ -121,6 +131,9 @@ fun WidgetPage(
                         onRemove = { onRemoveWidget(placement) },
                         onMoveUp = { onMoveWidget(placement, -1) },
                         onMoveDown = { onMoveWidget(placement, 1) },
+                        onResize = { widthDp, heightDp ->
+                            onResizeWidget(placement, widthDp, heightDp)
+                        },
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
@@ -185,23 +198,85 @@ private fun HostedWidgetCard(
     onRemove: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    onResize: (widthDp: Int, heightDp: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val controller = LocalGraph.current.widgetHost
-    val info = remember(placement) { controller.appWidgetInfo(placement.appWidgetId) }
-    val label = remember(info, placement) {
+    val info = remember(placement.appWidgetId) {
+        controller.appWidgetInfo(placement.appWidgetId)
+    }
+    val label = remember(info, placement.providerPackage) {
         info?.let(controller::providerLabel) ?: placement.providerPackage
     }
-    var widthPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
-    val heightDp = placement.heightDp.coerceIn(96, 480)
+    var availableWidthPx by remember { mutableIntStateOf(0) }
+    val availableWidthDp = with(density) {
+        availableWidthPx.toDp().value.roundToInt()
+    }
+    val persistedWidthDp = when {
+        availableWidthDp <= 0 -> placement.widthDp.coerceAtLeast(1)
+        placement.widthDp == WidgetPlacement.MATCH_PARENT_WIDTH_DP -> availableWidthDp
+        else -> placement.widthDp.coerceIn(1, availableWidthDp)
+    }
+    val persistedHeightDp = placement.heightDp.coerceIn(
+        WidgetPlacement.MIN_WIDGET_HEIGHT_DP,
+        WidgetPlacement.MAX_WIDGET_HEIGHT_DP,
+    )
+    val resizeBounds = remember(info, availableWidthDp, editing) {
+        if (!editing || info == null || availableWidthDp <= 0) {
+            null
+        } else {
+            controller.resizeBounds(info, availableWidthDp)
+        }
+    }
+    val canResizeHorizontally = resizeBounds?.canResizeHorizontally == true
+    val canResizeVertically = resizeBounds?.canResizeVertically == true
+    val minWidthDp = resizeBounds?.minWidthDp ?: persistedWidthDp
+    val maxWidthDp = resizeBounds?.maxWidthDp ?: persistedWidthDp
+    val minHeightDp = resizeBounds?.minHeightDp ?: persistedHeightDp
+    val maxHeightDp = resizeBounds?.maxHeightDp ?: persistedHeightDp
 
-    LaunchedEffect(placement.appWidgetId, widthPx, heightDp) {
-        if (widthPx > 0 && info != null) {
+    var draftWidthDp by remember(placement.appWidgetId) {
+        mutableIntStateOf(placement.widthDp.coerceAtLeast(1))
+    }
+    var draftHeightDp by remember(placement.appWidgetId) {
+        mutableIntStateOf(persistedHeightDp)
+    }
+    var resizing by remember(placement.appWidgetId) { mutableStateOf(false) }
+
+    LaunchedEffect(
+        placement.widthDp,
+        placement.heightDp,
+        availableWidthDp,
+    ) {
+        if (!resizing && availableWidthDp > 0) {
+            draftWidthDp = persistedWidthDp
+            draftHeightDp = persistedHeightDp
+        }
+    }
+
+    val displayedWidthDp = if (availableWidthDp > 0) {
+        draftWidthDp.coerceIn(1, availableWidthDp)
+    } else {
+        draftWidthDp.coerceAtLeast(1)
+    }
+    val displayedHeightDp = draftHeightDp.coerceIn(
+        WidgetPlacement.MIN_WIDGET_HEIGHT_DP,
+        WidgetPlacement.MAX_WIDGET_HEIGHT_DP,
+    )
+
+    LaunchedEffect(
+        placement.appWidgetId,
+        placement.widthDp,
+        placement.heightDp,
+        availableWidthDp,
+        info,
+    ) {
+        if (availableWidthDp > 0 && info != null) {
             controller.updateSize(
                 appWidgetId = placement.appWidgetId,
-                widthDp = with(density) { widthPx.toDp().value.toInt() },
-                heightDp = heightDp,
+                widthDp = persistedWidthDp,
+                heightDp = persistedHeightDp,
             )
         }
     }
@@ -209,62 +284,279 @@ private fun HostedWidgetCard(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(heightDp.dp)
-            .onSizeChanged { widthPx = it.width }
-            .clip(RoundedCornerShape(26.dp))
-            .background(Color.White.copy(alpha = 0.10f))
-            .border(
-                width = 0.5.dp,
-                color = Color.White.copy(alpha = 0.20f),
-                shape = RoundedCornerShape(26.dp),
-            ),
+            .onSizeChanged { availableWidthPx = it.width },
+        contentAlignment = Alignment.TopCenter,
     ) {
-        if (info == null || info.provider != controller.componentOf(placement)) {
-            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Text(
-                    text = stringResource(R.string.widget_unavailable),
-                    color = Kome.copy(alpha = 0.65f),
+        val cardWidthModifier = if (availableWidthDp > 0) {
+            Modifier.width(displayedWidthDp.dp)
+        } else {
+            Modifier.fillMaxWidth()
+        }
+        Box(
+            modifier = cardWidthModifier
+                .height(displayedHeightDp.dp)
+                .clip(RoundedCornerShape(26.dp))
+                .background(Color.White.copy(alpha = 0.10f))
+                .border(
+                    width = 0.5.dp,
+                    color = Color.White.copy(alpha = 0.20f),
+                    shape = RoundedCornerShape(26.dp),
+                ),
+        ) {
+            if (info == null || info.provider != controller.componentOf(placement)) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = stringResource(R.string.widget_unavailable),
+                        color = Kome.copy(alpha = 0.65f),
+                    )
+                }
+            } else {
+                AndroidView<AppWidgetHostView>(
+                    factory = { context ->
+                        controller.createView(context, placement.appWidgetId, info)
+                    },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
-        } else {
-            AndroidView<AppWidgetHostView>(
-                factory = { context ->
-                    controller.createView(context, placement.appWidgetId, info)
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
 
-        if (editing) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp),
-            ) {
-                if (canMoveUp) {
+            if (editing) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
+                ) {
+                    if (canMoveUp) {
+                        WidgetEditButton(
+                            imageVector = Icons.Rounded.KeyboardArrowUp,
+                            contentDescription = stringResource(R.string.widget_move_up, label),
+                            onClick = onMoveUp,
+                        )
+                    }
+                    if (canMoveDown) {
+                        WidgetEditButton(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = stringResource(R.string.widget_move_down, label),
+                            onClick = onMoveDown,
+                        )
+                    }
                     WidgetEditButton(
-                        imageVector = Icons.Rounded.KeyboardArrowUp,
-                        contentDescription = stringResource(R.string.widget_move_up, label),
-                        onClick = onMoveUp,
+                        imageVector = Icons.Rounded.Remove,
+                        contentDescription = stringResource(R.string.widget_remove, label),
+                        destructive = true,
+                        onClick = onRemove,
                     )
                 }
-                if (canMoveDown) {
-                    WidgetEditButton(
-                        imageVector = Icons.Rounded.KeyboardArrowDown,
-                        contentDescription = stringResource(R.string.widget_move_down, label),
-                        onClick = onMoveDown,
+
+                if (canResizeHorizontally || canResizeVertically) {
+                    Text(
+                        text = stringResource(
+                            R.string.widget_size_value,
+                            displayedWidthDp,
+                            displayedHeightDp,
+                        ),
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xCC2C2C2E))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                    WidgetResizeHandle(
+                        contentDescription = stringResource(R.string.widget_resize, label),
+                        canResizeHorizontally = canResizeHorizontally,
+                        canResizeVertically = canResizeVertically,
+                        minWidthDp = minWidthDp,
+                        maxWidthDp = maxWidthDp,
+                        minHeightDp = minHeightDp,
+                        maxHeightDp = maxHeightDp,
+                        persistedWidthDp = persistedWidthDp,
+                        persistedHeightDp = persistedHeightDp,
+                        draftWidthDp = draftWidthDp,
+                        draftHeightDp = draftHeightDp,
+                        availableWidthDp = availableWidthDp,
+                        onResizeStateChanged = { resizing = it },
+                        onDraftSizeChanged = { widthDp, heightDp ->
+                            draftWidthDp = widthDp
+                            draftHeightDp = heightDp
+                        },
+                        onResizeFinished = { widthDp, heightDp ->
+                            val storedWidthDp = if (
+                                canResizeHorizontally &&
+                                abs(widthDp - availableWidthDp) <= FULL_WIDTH_SNAP_TOLERANCE_DP
+                            ) {
+                                WidgetPlacement.MATCH_PARENT_WIDTH_DP
+                            } else if (canResizeHorizontally) {
+                                widthDp
+                            } else {
+                                placement.widthDp
+                            }
+                            val storedHeightDp = if (canResizeVertically) {
+                                heightDp
+                            } else {
+                                placement.heightDp
+                            }
+                            if (
+                                storedWidthDp != placement.widthDp ||
+                                storedHeightDp != placement.heightDp
+                            ) {
+                                onResize(storedWidthDp, storedHeightDp)
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp),
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.widget_resize_unavailable),
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xCC2C2C2E))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
-                WidgetEditButton(
-                    imageVector = Icons.Rounded.Remove,
-                    contentDescription = stringResource(R.string.widget_remove, label),
-                    destructive = true,
-                    onClick = onRemove,
-                )
             }
         }
     }
+}
+
+@Composable
+private fun WidgetResizeHandle(
+    contentDescription: String,
+    canResizeHorizontally: Boolean,
+    canResizeVertically: Boolean,
+    minWidthDp: Int,
+    maxWidthDp: Int,
+    minHeightDp: Int,
+    maxHeightDp: Int,
+    persistedWidthDp: Int,
+    persistedHeightDp: Int,
+    draftWidthDp: Int,
+    draftHeightDp: Int,
+    availableWidthDp: Int,
+    onResizeStateChanged: (Boolean) -> Unit,
+    onDraftSizeChanged: (widthDp: Int, heightDp: Int) -> Unit,
+    onResizeFinished: (widthDp: Int, heightDp: Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val latestDraftWidthDp by rememberUpdatedState(draftWidthDp)
+    val latestDraftHeightDp by rememberUpdatedState(draftHeightDp)
+    val latestOnResizeStateChanged by rememberUpdatedState(onResizeStateChanged)
+    val latestOnDraftSizeChanged by rememberUpdatedState(onDraftSizeChanged)
+    val latestOnResizeFinished by rememberUpdatedState(onResizeFinished)
+    val safeMaxWidthDp = maxWidthDp.coerceAtMost(availableWidthDp).coerceAtLeast(1)
+    val safeMinWidthDp = minWidthDp.coerceAtMost(safeMaxWidthDp)
+    val safeMaxHeightDp = maxHeightDp.coerceAtLeast(1)
+    val safeMinHeightDp = minHeightDp.coerceAtMost(safeMaxHeightDp)
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(IOS_SELECTION_BLUE)
+            .semantics { this.contentDescription = contentDescription }
+            .pointerInput(
+                canResizeHorizontally,
+                canResizeVertically,
+                safeMinWidthDp,
+                safeMaxWidthDp,
+                safeMinHeightDp,
+                safeMaxHeightDp,
+                persistedWidthDp,
+                persistedHeightDp,
+                availableWidthDp,
+                density.density,
+            ) {
+                var widthAccumulator = draftWidthDp.toFloat()
+                var heightAccumulator = draftHeightDp.toFloat()
+                var currentWidthDp = draftWidthDp
+                var currentHeightDp = draftHeightDp
+                detectDragGestures(
+                    onDragStart = {
+                        widthAccumulator = latestDraftWidthDp.toFloat()
+                        heightAccumulator = latestDraftHeightDp.toFloat()
+                        currentWidthDp = latestDraftWidthDp
+                        currentHeightDp = latestDraftHeightDp
+                        latestOnResizeStateChanged(true)
+                    },
+                    onDragCancel = {
+                        latestOnDraftSizeChanged(persistedWidthDp, persistedHeightDp)
+                        latestOnResizeStateChanged(false)
+                    },
+                    onDragEnd = {
+                        val finalWidthDp = if (canResizeHorizontally) {
+                            snapWidgetSize(
+                                currentWidthDp,
+                                safeMinWidthDp,
+                                safeMaxWidthDp,
+                            )
+                        } else {
+                            persistedWidthDp
+                        }
+                        val finalHeightDp = if (canResizeVertically) {
+                            snapWidgetSize(
+                                currentHeightDp,
+                                safeMinHeightDp,
+                                safeMaxHeightDp,
+                            )
+                        } else {
+                            persistedHeightDp
+                        }
+                        latestOnDraftSizeChanged(finalWidthDp, finalHeightDp)
+                        latestOnResizeFinished(finalWidthDp, finalHeightDp)
+                        latestOnResizeStateChanged(false)
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        if (canResizeHorizontally) {
+                            // カードは中央寄せのため、ハンドル移動量の2倍で幅を追従させる。
+                            widthAccumulator += dragAmount.x / density.density * 2f
+                            widthAccumulator = widthAccumulator.coerceIn(
+                                safeMinWidthDp.toFloat(),
+                                safeMaxWidthDp.toFloat(),
+                            )
+                            currentWidthDp = snapWidgetSize(
+                                widthAccumulator.roundToInt(),
+                                safeMinWidthDp,
+                                safeMaxWidthDp,
+                            )
+                        }
+                        if (canResizeVertically) {
+                            heightAccumulator += dragAmount.y / density.density
+                            heightAccumulator = heightAccumulator.coerceIn(
+                                safeMinHeightDp.toFloat(),
+                                safeMaxHeightDp.toFloat(),
+                            )
+                            currentHeightDp = snapWidgetSize(
+                                heightAccumulator.roundToInt(),
+                                safeMinHeightDp,
+                                safeMaxHeightDp,
+                            )
+                        }
+                        latestOnDraftSizeChanged(currentWidthDp, currentHeightDp)
+                    },
+                )
+            },
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.AspectRatio,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(23.dp),
+        )
+    }
+}
+
+private fun snapWidgetSize(valueDp: Int, minDp: Int, maxDp: Int): Int {
+    val snapped = (valueDp.toFloat() / WIDGET_SIZE_STEP_DP).roundToInt() * WIDGET_SIZE_STEP_DP
+    return snapped.coerceIn(minDp, maxDp)
 }
 
 @Composable
@@ -290,3 +582,6 @@ private fun WidgetEditButton(
         )
     }
 }
+
+private const val WIDGET_SIZE_STEP_DP = 8
+private const val FULL_WIDTH_SNAP_TOLERANCE_DP = 4
