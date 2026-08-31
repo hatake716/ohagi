@@ -149,7 +149,7 @@ fun SplitAppPickerScreen(
                 query = query,
                 selectedCategory = selectedCategory,
                 onCategorySelected = { selectedCategory = it },
-                onPreviewAppClick = { onSelectApp(it.ref) },
+                onPreviewAppClick = { app, _ -> onSelectApp(app.ref) },
                 frequentApps = rankedLaunches,
                 preferredApps = preferredApps,
                 modifier = Modifier

@@ -198,6 +198,7 @@ fun rememberOhagiDropTarget(
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Suppress("DEPRECATION")
+@Composable
 fun Modifier.ohagiDragSource(
     payload: DragPayload,
     icon: ImageBitmap?,
@@ -205,42 +206,54 @@ fun Modifier.ohagiDragSource(
     onTap: () -> Unit,
     onPressChanged: (Boolean) -> Unit = {},
     onDragStarted: () -> Unit = {},
-): Modifier = dragAndDropSource(
-    drawDragDecoration = {
-        if (folderIcons.isEmpty()) {
-            drawOhagiDragDecoration(icon)
-        } else {
-            drawOhagiFolderDragDecoration(folderIcons)
+): Modifier {
+    // animateItemの安定keyで同じComposableが別slotへ移動しても、D&D nodeが
+    // 移動前indexのlambdaを保持しないよう、セッション開始時に最新値を読む。
+    val currentPayload = rememberUpdatedState(payload)
+    val currentIcon = rememberUpdatedState(icon)
+    val currentFolderIcons = rememberUpdatedState(folderIcons)
+    val currentTap = rememberUpdatedState(onTap)
+    val currentPressChanged = rememberUpdatedState(onPressChanged)
+    val currentDragStarted = rememberUpdatedState(onDragStarted)
+
+    return dragAndDropSource(
+        drawDragDecoration = {
+            val latestFolderIcons = currentFolderIcons.value
+            if (latestFolderIcons.isEmpty()) {
+                drawOhagiDragDecoration(currentIcon.value)
+            } else {
+                drawOhagiFolderDragDecoration(latestFolderIcons)
+            }
+        },
+        block = {
+            detectTapGestures(
+                onPress = {
+                    currentPressChanged.value(true)
+                    try {
+                        tryAwaitRelease()
+                    } finally {
+                        currentPressChanged.value(false)
+                    }
+                },
+                onTap = { currentTap.value() },
+                onLongPress = {
+                    val transferData = currentPayload.value.toTransferData()
+                    startTransfer(transferData)
+                    currentDragStarted.value()
+                },
+            )
+        },
+    ).semantics {
+        onClick {
+            currentTap.value()
+            true
         }
-    },
-    block = {
-        detectTapGestures(
-            onPress = {
-                onPressChanged(true)
-                try {
-                    tryAwaitRelease()
-                } finally {
-                    onPressChanged(false)
-                }
-            },
-            onTap = { onTap() },
-            onLongPress = {
-                val transferData = payload.toTransferData()
-                startTransfer(transferData)
-                onDragStarted()
-            },
-        )
-    },
-).semantics {
-    onClick {
-        onTap()
-        true
     }
 }
 
 private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
-    // 元アイコンより約1.1倍大きいpreviewを、影の余白を残して指の下へ浮かせる。
-    val iconSize = min(size.minDimension * 0.90f, 72.dp.toPx())
+    // 元アイコンより約1.1倍大きい半透明previewを、影の余白を残して指下へ浮かせる。
+    val iconSize = min(size.minDimension * 0.94f, 76.dp.toPx())
     val left = (size.width - iconSize) / 2f
     val top = (size.height - iconSize) / 2f
     val corner = iconSize * IOS_ICON_CORNER_RATIO
@@ -277,6 +290,7 @@ private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
                 image = icon,
                 dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
                 dstSize = IntSize(iconSize.roundToInt(), iconSize.roundToInt()),
+                alpha = 0.97f,
             )
         }
     } else {
@@ -298,7 +312,7 @@ private fun DrawScope.drawOhagiDragDecoration(icon: ImageBitmap?) {
 
 /** フォルダ本体を移動中も、単体アプリではなく3×3プレビューの影を表示する。 */
 private fun DrawScope.drawOhagiFolderDragDecoration(icons: List<ImageBitmap?>) {
-    val folderSize = min(size.minDimension * 0.90f, 72.dp.toPx())
+    val folderSize = min(size.minDimension * 0.94f, 76.dp.toPx())
     val left = (size.width - folderSize) / 2f
     val top = (size.height - folderSize) / 2f
     val corner = folderSize * IOS_ICON_CORNER_RATIO
@@ -362,6 +376,7 @@ private fun DrawScope.drawOhagiFolderDragDecoration(icons: List<ImageBitmap?>) {
                     image = bitmap,
                     dstOffset = IntOffset(miniLeft.roundToInt(), miniTop.roundToInt()),
                     dstSize = IntSize(miniSize.roundToInt(), miniSize.roundToInt()),
+                    alpha = 0.97f,
                 )
             }
         }

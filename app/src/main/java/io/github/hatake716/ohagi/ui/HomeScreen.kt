@@ -4,13 +4,12 @@ import android.app.Activity
 import android.appwidget.AppWidgetProviderInfo
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -21,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -79,11 +79,15 @@ import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.FREQUENT_APP_ICON_SIZE
+import io.github.hatake716.ohagi.ui.common.IosMotion
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
 import io.github.hatake716.ohagi.ui.common.appLibraryPrefetchBudget
 import io.github.hatake716.ohagi.ui.common.buildAppLibraryIconPrefetchRequests
+import io.github.hatake716.ohagi.ui.common.iosHomeSurfaceVisibility
+import io.github.hatake716.ohagi.ui.common.iosPageDistance
+import io.github.hatake716.ohagi.ui.common.toLaunchBounds
 import io.github.hatake716.ohagi.ui.dock.DockBar
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.isOhagiRemovableDrag
@@ -96,17 +100,24 @@ import io.github.hatake716.ohagi.ui.home.HomeGrid
 import io.github.hatake716.ohagi.ui.widget.WidgetPage
 import io.github.hatake716.ohagi.ui.widget.WidgetPickerSheet
 import io.github.hatake716.ohagi.util.LaunchUtils
+import io.github.hatake716.ohagi.util.AppLaunchRequest
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.absoluteValue
+import kotlin.math.roundToInt
 
 /** いま画面に重なっている UI(同時に 1 つだけ) */
 private sealed interface Overlay {
     data object None : Overlay
     data object WidgetPicker : Overlay
-    data class FolderView(val location: FolderLocation) : Overlay
+    data class FolderView(
+        val location: FolderLocation,
+        val sourceBounds: Rect? = null,
+    ) : Overlay
     data class RenameFolder(val location: FolderLocation) : Overlay
     data class SlotMenu(val slot: Int) : Overlay
     data class DockSlotChooser(val app: AppRef) : Overlay
@@ -125,8 +136,9 @@ private sealed interface PickTarget {
 @Composable
 fun HomeScreen(
     homeEvents: Flow<Unit>,
+    appReturnEvents: Flow<AppLaunchRequest>,
     onRequestWidget: (AppWidgetProviderInfo) -> Unit,
-    onLaunchApp: (AppRef) -> Unit,
+    onLaunchApp: (AppLaunchRequest) -> Unit,
 ) {
     val graph = LocalGraph.current
     val context = LocalContext.current
@@ -141,6 +153,17 @@ fun HomeScreen(
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_HOME_PAGER_INDEX,
         pageCount = { layout.homePageCount + STATIC_PAGE_COUNT },
+    )
+    val pageSnapSpec = remember {
+        spring<Float>(
+            dampingRatio = IosMotion.PAGE_SNAP_DAMPING,
+            stiffness = IosMotion.PAGE_SNAP_STIFFNESS,
+        )
+    }
+    val pagerFlingBehavior = PagerDefaults.flingBehavior(
+        state = pagerState,
+        snapAnimationSpec = pageSnapSpec,
+        snapPositionalThreshold = IosMotion.PAGE_POSITIONAL_THRESHOLD,
     )
     // DataStoreの初回読込や直前操作の書込み完了も、指が動いている間は
     // Pagerのページ数・全セルを差し替えず、settle後に一度で反映する。
@@ -171,21 +194,53 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         homeEvents.collect {
             overlay = Overlay.None
-            pagerState.scrollToPage(PRIMARY_HOME_PAGER_INDEX)
+            pagerState.animateScrollToPage(
+                page = PRIMARY_HOME_PAGER_INDEX,
+                animationSpec = pageSnapSpec,
+            )
         }
     }
 
     BackHandler(enabled = overlay == Overlay.None && pagerState.currentPage != PRIMARY_HOME_PAGER_INDEX) {
-        scope.launch { pagerState.animateScrollToPage(PRIMARY_HOME_PAGER_INDEX) }
+        scope.launch {
+            pagerState.animateScrollToPage(
+                page = PRIMARY_HOME_PAGER_INDEX,
+                animationSpec = pageSnapSpec,
+            )
+        }
     }
     // 1枚目のホームではバックキーを無効化(ランチャーの標準挙動)
     BackHandler(enabled = overlay == Overlay.None && pagerState.currentPage == PRIMARY_HOME_PAGER_INDEX) { }
     BackHandler(enabled = overlay != Overlay.None) { overlay = Overlay.None }
 
-    /** 単体でフルスクリーン起動する。 */
-    fun openApp(app: AppRef) {
+    val returnScale = remember { Animatable(1f) }
+    val returnAlpha = remember { Animatable(1f) }
+    LaunchedEffect(appReturnEvents) {
+        appReturnEvents.collectLatest {
+            // OSの閉じる遷移が終わる最後の数フレームだけ、ホームを柔らかく着地させる。
+            returnScale.snapTo(0.986f)
+            returnAlpha.snapTo(0.94f)
+            coroutineScope {
+                launch {
+                    returnScale.animateTo(
+                        targetValue = 1f,
+                        animationSpec = spring(dampingRatio = 0.88f, stiffness = 500f),
+                    )
+                }
+                launch {
+                    returnAlpha.animateTo(
+                        targetValue = 1f,
+                        animationSpec = IosMotion.itemFadeInSpec,
+                    )
+                }
+            }
+        }
+    }
+
+    /** 単体でフルスクリーン起動し、タップしたアイコン矩形をOS遷移へ渡す。 */
+    fun openApp(app: AppRef, sourceBounds: Rect? = null) {
         overlay = Overlay.None
-        onLaunchApp(app)
+        onLaunchApp(AppLaunchRequest(app, sourceBounds?.toLaunchBounds()))
     }
 
     // ---- 公式 Compose Drag and Drop ----
@@ -203,6 +258,7 @@ fun HomeScreen(
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
     val density = LocalDensity.current
     val edgeZonePx = with(density) { HOME_PAGE_EDGE_ZONE.toPx() }
+    val dockHiddenOffsetPx = with(density) { 28.dp.toPx() }
     val appLibraryIconRequests = remember(
         apps,
         rankedLaunches,
@@ -283,7 +339,10 @@ fun HomeScreen(
                         else -> currentPage.coerceIn(0, currentHomePageCount + 1)
                     }
                     if (destination != currentPage) {
-                        pagerState.animateScrollToPage(destination)
+                        pagerState.animateScrollToPage(
+                            page = destination,
+                            animationSpec = pageSnapSpec,
+                        )
                         previousPage = destination
                     } else {
                         previousPage = currentPage
@@ -673,6 +732,11 @@ fun HomeScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .graphicsLayer {
+                scaleX = returnScale.value
+                scaleY = returnScale.value
+                alpha = returnAlpha.value
+            }
             .onGloballyPositioned { rootBounds = it.boundsInRoot() }
             .ohagiDropTarget(pagerFallbackTarget),
     ) {
@@ -747,6 +811,7 @@ fun HomeScreen(
                 ) {
                     IosFolderOverlay(
                         location = current.location,
+                        sourceBounds = current.sourceBounds,
                         folderName = folder.name,
                         apps = folder.apps,
                         labelOf = appLabelOf,
@@ -784,6 +849,7 @@ fun HomeScreen(
 
         HorizontalPager(
             state = pagerState,
+            flingBehavior = pagerFlingBehavior,
             userScrollEnabled = activeDrag == null && overlay == Overlay.None,
             key = { page ->
                 when {
@@ -794,110 +860,145 @@ fun HomeScreen(
             },
             modifier = Modifier.fillMaxSize(),
         ) { page ->
-            when {
-                page == WIDGET_PAGER_INDEX -> WidgetPage(
-                    widgets = layout.widgets,
-                    onAddWidget = { overlay = Overlay.WidgetPicker },
-                    onRemoveWidget = { placement ->
-                        graph.widgetHost.deleteAppWidgetId(placement.appWidgetId)
-                        repo.removeWidget(placement.appWidgetId)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val distance = iosPageDistance(
+                            currentPage = pagerState.currentPage,
+                            currentPageOffsetFraction = pagerState.currentPageOffsetFraction,
+                            page = page,
+                        )
+                        val centered = 1f - distance
+                        val scale = 0.985f + 0.015f * centered
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 0.92f + 0.08f * centered
                     },
-                    onMoveWidget = { placement, direction ->
-                        repo.reorderWidget(placement.appWidgetId, direction)
-                    },
-                    onResizeWidget = { placement, widthDp, heightDp ->
-                        repo.resizeWidget(placement.appWidgetId, widthDp, heightDp)
-                    },
-                )
+            ) {
+                when {
+                    page == WIDGET_PAGER_INDEX -> WidgetPage(
+                        widgets = layout.widgets,
+                        onAddWidget = { overlay = Overlay.WidgetPicker },
+                        onRemoveWidget = { placement ->
+                            graph.widgetHost.deleteAppWidgetId(placement.appWidgetId)
+                            repo.removeWidget(placement.appWidgetId)
+                        },
+                        onMoveWidget = { placement, direction ->
+                            repo.reorderWidget(placement.appWidgetId, direction)
+                        },
+                        onResizeWidget = { placement, widthDp, heightDp ->
+                            repo.resizeWidget(placement.appWidgetId, widthDp, heightDp)
+                        },
+                    )
 
-                page in 1..layout.homePageCount -> {
-                    val homePage = page - 1
-                    HomeGrid(
-                        home = layout.homePage(homePage),
-                        indexOffset = homeGlobalIndex(homePage, 0),
-                        activeDrag = activeDrag,
-                        labelOf = appLabelOf,
-                        onCellTap = { index ->
-                            when (val item = layout.home.getOrNull(index)) {
-                                is HomeItem.HomeApp -> openApp(item.app)
-                                is HomeItem.HomeFolder ->
-                                    overlay = Overlay.FolderView(FolderLocation.Home(index))
-                                else -> Unit
+                    page in 1..layout.homePageCount -> {
+                        val homePage = page - 1
+                        HomeGrid(
+                            home = layout.homePage(homePage),
+                            indexOffset = homeGlobalIndex(homePage, 0),
+                            activeDrag = activeDrag,
+                            labelOf = appLabelOf,
+                            onCellTap = { index, bounds ->
+                                when (val item = layout.home.getOrNull(index)) {
+                                    is HomeItem.HomeApp -> openApp(item.app, bounds)
+                                    is HomeItem.HomeFolder ->
+                                        overlay = Overlay.FolderView(
+                                            location = FolderLocation.Home(index),
+                                            sourceBounds = bounds,
+                                        )
+                                    else -> Unit
+                                }
+                            },
+                            onCellMenu = { index ->
+                                if (layout.home.getOrNull(index) != null) {
+                                    overlay = Overlay.HomeItemMenu(index)
+                                }
+                            },
+                            onDrop = ::routeDropOnHome,
+                            canStack = ::canStackOnHome,
+                            onDragMoved = ::updateDragPosition,
+                            onDragSessionStarted = { activeDrag = it },
+                            onDragSessionEnded = ::endDragSession,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .statusBarsPadding()
+                                .padding(bottom = HOME_GRID_BOTTOM_RESERVED),
+                        )
+                    }
+
+                    page == appLibraryPage -> AppDrawer(
+                        apps = apps,
+                        frequentApps = rankedLaunches,
+                        preferredApps = preferredApps,
+                        onLaunch = { app, bounds -> openApp(app.ref, bounds) },
+                        onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
+                        onAppInfo = { app ->
+                            overlay = Overlay.None
+                            LaunchUtils.openAppInfo(context, app.ref.packageName)
+                        },
+                        onUninstall = { app ->
+                            overlay = Overlay.None
+                            LaunchUtils.requestUninstall(context, app.ref.packageName)
+                        },
+                        onOpenDefaultHome = {
+                            (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
+                        },
+                        onDragStarted = { payload ->
+                            activeDrag = payload
+                            // OSのD&Dセッションを保ったまま、最後のホームページを露出する。
+                            scope.launch { pagerState.scrollToPage(layout.homePageCount) }
+                        },
+                        onDismiss = {
+                            scope.launch {
+                                pagerState.animateScrollToPage(
+                                    page = PRIMARY_HOME_PAGER_INDEX,
+                                    animationSpec = pageSnapSpec,
+                                )
                             }
                         },
-                        onCellMenu = { index ->
-                            if (layout.home.getOrNull(index) != null) {
-                                overlay = Overlay.HomeItemMenu(index)
-                            }
-                        },
-                        onDrop = ::routeDropOnHome,
-                        canStack = ::canStackOnHome,
-                        onDragMoved = ::updateDragPosition,
-                        onDragSessionStarted = { activeDrag = it },
-                        onDragSessionEnded = ::endDragSession,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .statusBarsPadding()
-                            .padding(bottom = HOME_GRID_BOTTOM_RESERVED),
                     )
                 }
-
-                page == appLibraryPage -> AppDrawer(
-                    apps = apps,
-                    frequentApps = rankedLaunches,
-                    preferredApps = preferredApps,
-                    onLaunch = { app -> openApp(app.ref) },
-                    onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
-                    onAppInfo = { app ->
-                        overlay = Overlay.None
-                        LaunchUtils.openAppInfo(context, app.ref.packageName)
-                    },
-                    onUninstall = { app ->
-                        overlay = Overlay.None
-                        LaunchUtils.requestUninstall(context, app.ref.packageName)
-                    },
-                    onOpenDefaultHome = {
-                        (context as? Activity)?.let { LaunchUtils.requestDefaultHome(it) }
-                    },
-                    onDragStarted = { payload ->
-                        activeDrag = payload
-                        // OSのD&Dセッションを保ったまま、最後のホームページを露出する。
-                        scope.launch { pagerState.scrollToPage(layout.homePageCount) }
-                    },
-                    onDismiss = {
-                        scope.launch { pagerState.animateScrollToPage(PRIMARY_HOME_PAGER_INDEX) }
-                    },
-                )
             }
         }
 
-        if (layout.homePageCount > 1 && pagerState.currentPage in 1..layout.homePageCount) {
+        val pagerPosition = pagerState.currentPage + pagerState.currentPageOffsetFraction
+        val homeSurfaceVisibility = iosHomeSurfaceVisibility(
+            pagerPosition = pagerPosition,
+            homePageCount = layout.homePageCount,
+        )
+        val composeHomeChrome = pagerState.isScrollInProgress ||
+            pagerState.currentPage in 1..layout.homePageCount
+
+        if (layout.homePageCount > 1 && composeHomeChrome) {
             HomePageIndicator(
                 pageCount = layout.homePageCount,
-                selectedPage = pagerState.currentPage - 1,
+                pagePosition = pagerPosition - PRIMARY_HOME_PAGER_INDEX,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(bottom = HOME_PAGE_INDICATOR_BOTTOM),
+                    .padding(bottom = HOME_PAGE_INDICATOR_BOTTOM)
+                    .graphicsLayer {
+                        alpha = homeSurfaceVisibility
+                        translationY = (1f - homeSurfaceVisibility) * dockHiddenOffsetPx * 0.45f
+                    },
             )
         }
 
-        // Dockはホームページだけに表示し、WidgetページとAppライブラリでは隠す。
-        AnimatedVisibility(
-            visible = pagerState.currentPage in 1..layout.homePageCount,
-            enter = fadeIn(animationSpec = tween(150)),
-            exit = fadeOut(animationSpec = tween(120)),
-            modifier = Modifier.align(Alignment.BottomCenter),
-        ) {
+        // 指のページ位置へ連続追従し、両端ページでは下へ退避して構成からも外す。
+        if (composeHomeChrome) {
             DockBar(
                 dock = layout.dock,
                 activeDrag = activeDrag,
                 labelOf = appLabelOf,
-                onSlotTap = { slot ->
+                onSlotTap = { slot, bounds ->
                     when (val item = layout.dock.getOrNull(slot)) {
-                        is DockItem.DockApp -> openApp(item.app)
+                        is DockItem.DockApp -> openApp(item.app, bounds)
                         is DockItem.DockFolder ->
-                            overlay = Overlay.FolderView(FolderLocation.Dock(slot))
+                            overlay = Overlay.FolderView(
+                                location = FolderLocation.Dock(slot),
+                                sourceBounds = bounds,
+                            )
                         null -> Unit
                     }
                 },
@@ -913,8 +1014,16 @@ fun HomeScreen(
                 },
                 onDragSessionEnded = ::endDragSession,
                 modifier = Modifier
+                    .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .graphicsLayer {
+                        alpha = homeSurfaceVisibility
+                        translationY = (1f - homeSurfaceVisibility) * dockHiddenOffsetPx
+                        val scale = 0.96f + 0.04f * homeSurfaceVisibility
+                        scaleX = scale
+                        scaleY = scale
+                    },
             )
         }
 
@@ -1217,9 +1326,10 @@ private fun RenameFolderDialog(
 @Composable
 private fun HomePageIndicator(
     pageCount: Int,
-    selectedPage: Int,
+    pagePosition: Float,
     modifier: Modifier = Modifier,
 ) {
+    val selectedPage = pagePosition.roundToInt().coerceIn(0, pageCount - 1)
     val description = stringResource(
         R.string.home_page_description,
         selectedPage + 1,
@@ -1235,14 +1345,18 @@ private fun HomePageIndicator(
             .padding(horizontal = 8.dp, vertical = 5.dp),
     ) {
         repeat(pageCount) { page ->
+            val proximity = 1f - (page - pagePosition).absoluteValue.coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
-                    .size(if (page == selectedPage) 7.dp else 6.dp)
+                    .size(7.dp)
+                    .graphicsLayer {
+                        alpha = 0.42f + 0.58f * proximity
+                        val scale = 0.86f + 0.14f * proximity
+                        scaleX = scale
+                        scaleY = scale
+                    }
                     .clip(CircleShape)
-                    .background(
-                        if (page == selectedPage) Color.White
-                        else Color.White.copy(alpha = 0.42f),
-                    ),
+                    .background(Color.White),
             )
         }
     }

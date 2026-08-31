@@ -33,10 +33,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -73,7 +76,7 @@ fun AppDrawer(
     apps: List<AppInfo>,
     frequentApps: List<AppRef>,
     preferredApps: List<AppRef>,
-    onLaunch: (AppInfo) -> Unit,
+    onLaunch: (AppInfo, Rect?) -> Unit,
     onAddToDock: (AppInfo) -> Unit,
     onAppInfo: (AppInfo) -> Unit,
     onUninstall: (AppInfo) -> Unit,
@@ -164,7 +167,7 @@ fun AppDrawer(
         ) { app ->
             DrawerCell(
                 app = app,
-                onTap = { onLaunch(app) },
+                onTap = { bounds -> onLaunch(app, bounds) },
                 onMenu = { menuTarget = app },
                 onDragStarted = onDragStarted,
             )
@@ -199,12 +202,13 @@ fun AppDrawer(
 @Composable
 private fun DrawerCell(
     app: AppInfo,
-    onTap: () -> Unit,
+    onTap: (Rect?) -> Unit,
     onMenu: () -> Unit,
     onDragStarted: (DragPayload) -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
     var isDragging by remember { mutableStateOf(false) }
+    var iconBounds by remember(app.ref) { mutableStateOf<Rect?>(null) }
     val dragVisual = rememberIosDragVisualState(
         pressed = pressed,
         isDragging = isDragging,
@@ -226,7 +230,7 @@ private fun DrawerCell(
             .ohagiDragSource(
                 payload = payload,
                 icon = icon,
-                onTap = onTap,
+                onTap = { onTap(iconBounds) },
                 onPressChanged = {
                     pressed = it
                     if (!it) isDragging = false
@@ -240,7 +244,13 @@ private fun DrawerCell(
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            AppIconImage(icon = icon, size = DRAWER_ICON_SIZE)
+            Box(
+                modifier = Modifier
+                    .size(DRAWER_ICON_SIZE)
+                    .onGloballyPositioned { iconBounds = it.boundsInRoot() },
+            ) {
+                AppIconImage(icon = icon, size = DRAWER_ICON_SIZE)
+            }
             Spacer(Modifier.height(6.dp))
             // iOS ホーム風: アイコン下に最大 2 行のラベル。半透明背景で読めるよう白系。
             Text(

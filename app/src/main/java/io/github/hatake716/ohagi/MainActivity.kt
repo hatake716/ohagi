@@ -20,6 +20,8 @@ import androidx.core.content.edit
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.HomeScreen
 import io.github.hatake716.ohagi.ui.theme.OhagiTheme
+import io.github.hatake716.ohagi.util.AppLaunchRequest
+import io.github.hatake716.ohagi.util.LaunchBounds
 import io.github.hatake716.ohagi.util.LaunchUtils
 import io.github.hatake716.ohagi.util.SplitLaunchNotification
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,16 +30,20 @@ class MainActivity : ComponentActivity() {
 
     /** HOME ボタン再押下(onNewIntent)をホーム画面に伝えるイベント */
     private val homeEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val appReturnEvents = MutableSharedFlow<AppLaunchRequest>(extraBufferCapacity = 1)
     private var pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
     private var pendingWidgetProvider: AppWidgetProviderInfo? = null
-    private var pendingAppLaunch: AppRef? = null
+    private var pendingAppLaunch: AppLaunchRequest? = null
+    private var lastExternalLaunch: AppLaunchRequest? = null
+    private var externalLaunchPaused = false
+    private var isResumed = false
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        val app = pendingAppLaunch ?: return@registerForActivityResult
+        val request = pendingAppLaunch ?: return@registerForActivityResult
         pendingAppLaunch = null
-        launchAppWithSplitNotification(app, canNotify = granted)
+        launchAppWithSplitNotification(request, canNotify = granted)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +57,7 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalGraph provides graph) {
                     HomeScreen(
                         homeEvents = homeEvents,
+                        appReturnEvents = appReturnEvents,
                         onRequestWidget = ::requestWidget,
                         onLaunchApp = ::requestAppLaunch,
                     )
@@ -61,12 +68,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        homeEvents.tryEmit(Unit)
+        // すでにホームが前面の時だけ「HOME再押下」と解釈する。
+        // 他アプリから戻った時は、iOSと同様に元のページ位置を維持する。
+        if (isResumed) homeEvents.tryEmit(Unit)
     }
 
     override fun onResume() {
         super.onResume()
+        isResumed = true
+        if (externalLaunchPaused) {
+            lastExternalLaunch?.let(appReturnEvents::tryEmit)
+            lastExternalLaunch = null
+            externalLaunchPaused = false
+        }
         (application as OhagiApp).graph.appRepository.refreshIfStale()
+    }
+
+    override fun onPause() {
+        isResumed = false
+        if (lastExternalLaunch != null) externalLaunchPaused = true
+        super.onPause()
     }
 
     override fun onStart() {
@@ -85,9 +106,16 @@ class MainActivity : ComponentActivity() {
         pendingWidgetProvider?.provider?.let { provider ->
             outState.putString(STATE_PENDING_WIDGET_PROVIDER, provider.flattenToString())
         }
-        pendingAppLaunch?.let { app ->
-            outState.putString(STATE_PENDING_APP_PACKAGE, app.packageName)
-            outState.putString(STATE_PENDING_APP_CLASS, app.className)
+        pendingAppLaunch?.let { request ->
+            outState.putString(STATE_PENDING_APP_PACKAGE, request.app.packageName)
+            outState.putString(STATE_PENDING_APP_CLASS, request.app.className)
+            request.sourceBounds?.let { bounds ->
+                outState.putBoolean(STATE_PENDING_APP_HAS_BOUNDS, true)
+                outState.putInt(STATE_PENDING_APP_LEFT, bounds.left)
+                outState.putInt(STATE_PENDING_APP_TOP, bounds.top)
+                outState.putInt(STATE_PENDING_APP_RIGHT, bounds.right)
+                outState.putInt(STATE_PENDING_APP_BOTTOM, bounds.bottom)
+            }
         }
     }
 
@@ -192,7 +220,7 @@ class MainActivity : ComponentActivity() {
      * ホーム／Dock／フォルダ／Appライブラリからの通常起動を一元化する。
      * 通知権限が未決定なら、このユーザー操作の文脈で一度だけ確認してから起動する。
      */
-    private fun requestAppLaunch(app: AppRef) {
+    private fun requestAppLaunch(request: AppLaunchRequest) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -202,26 +230,31 @@ class MainActivity : ComponentActivity() {
                 MODE_PRIVATE,
             )
             if (permissionPrefs.getBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, false)) {
-                launchAppWithSplitNotification(app, canNotify = false)
+                launchAppWithSplitNotification(request, canNotify = false)
                 return
             }
             permissionPrefs.edit { putBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, true) }
-            pendingAppLaunch = app
+            pendingAppLaunch = request
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             return
         }
-        launchAppWithSplitNotification(app, canNotify = true)
+        launchAppWithSplitNotification(request, canNotify = true)
     }
 
-    private fun launchAppWithSplitNotification(app: AppRef, canNotify: Boolean) {
+    private fun launchAppWithSplitNotification(
+        request: AppLaunchRequest,
+        canNotify: Boolean,
+    ) {
         // 起動Intentを最優先でOSへ渡す。通知の組み立て/Binder呼び出しは、
         // 画面遷移開始後にアプリプロセスの直列IO workerで行う。
-        if (!LaunchUtils.launch(this, app)) return
+        val options = LaunchUtils.scaleUpAnimationOptions(this, request.sourceBounds)
+        if (!LaunchUtils.launch(this, request.app, options)) return
+        lastExternalLaunch = request
         val graph = (application as OhagiApp).graph
-        graph.usageRepository.recordLaunch(app)
+        graph.usageRepository.recordLaunch(request.app)
         if (canNotify) {
-            val appLabel = graph.appRepository.labelOf(app)
-            SplitLaunchNotification.postAsync(applicationContext, app, appLabel)
+            val appLabel = graph.appRepository.labelOf(request.app)
+            SplitLaunchNotification.postAsync(applicationContext, request.app, appLabel)
         }
     }
 
@@ -243,7 +276,17 @@ class MainActivity : ComponentActivity() {
     private fun restorePendingAppLaunch(savedState: Bundle?) {
         val packageName = savedState?.getString(STATE_PENDING_APP_PACKAGE) ?: return
         val className = savedState.getString(STATE_PENDING_APP_CLASS) ?: return
-        pendingAppLaunch = AppRef(packageName, className)
+        val bounds = if (savedState.getBoolean(STATE_PENDING_APP_HAS_BOUNDS, false)) {
+            LaunchBounds(
+                left = savedState.getInt(STATE_PENDING_APP_LEFT),
+                top = savedState.getInt(STATE_PENDING_APP_TOP),
+                right = savedState.getInt(STATE_PENDING_APP_RIGHT),
+                bottom = savedState.getInt(STATE_PENDING_APP_BOTTOM),
+            )
+        } else {
+            null
+        }
+        pendingAppLaunch = AppLaunchRequest(AppRef(packageName, className), bounds)
     }
 
     private companion object {
@@ -253,6 +296,11 @@ class MainActivity : ComponentActivity() {
         const val STATE_PENDING_WIDGET_PROVIDER = "pending_widget_provider"
         const val STATE_PENDING_APP_PACKAGE = "pending_app_package"
         const val STATE_PENDING_APP_CLASS = "pending_app_class"
+        const val STATE_PENDING_APP_HAS_BOUNDS = "pending_app_has_bounds"
+        const val STATE_PENDING_APP_LEFT = "pending_app_left"
+        const val STATE_PENDING_APP_TOP = "pending_app_top"
+        const val STATE_PENDING_APP_RIGHT = "pending_app_right"
+        const val STATE_PENDING_APP_BOTTOM = "pending_app_bottom"
         const val PREFS_NOTIFICATION_PERMISSION = "notification_permission"
         const val KEY_NOTIFICATION_PERMISSION_ASKED = "asked"
     }

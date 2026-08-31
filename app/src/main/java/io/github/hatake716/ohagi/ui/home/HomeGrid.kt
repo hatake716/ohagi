@@ -2,6 +2,7 @@ package io.github.hatake716.ohagi.ui.home
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,8 @@ import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
+import io.github.hatake716.ohagi.ui.common.IosMotion
+import io.github.hatake716.ohagi.ui.common.homeMotionKeys
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
@@ -65,12 +68,13 @@ import io.github.hatake716.ohagi.ui.theme.Kome
  * 各セルが公式 Compose D&D の source/target を直接持つため、画面座標による判定は不要。
  */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun HomeGrid(
     home: List<HomeItem?>,
     indexOffset: Int,
     activeDrag: DragPayload?,
     labelOf: (AppRef) -> String,
-    onCellTap: (Int) -> Unit,
+    onCellTap: (Int, Rect?) -> Unit,
     onCellMenu: (Int) -> Unit,
     onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
     canStack: (Int, DragPayload) -> Boolean,
@@ -79,6 +83,7 @@ fun HomeGrid(
     onDragSessionEnded: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val motionKeys = remember(home, indexOffset) { homeMotionKeys(home, indexOffset) }
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         // 6行を領域いっぱいに均等配置し、最下段をドック直上にそろえる。
         val rowHeight = (maxHeight - 8.dp) / LayoutState.HOME_ROWS
@@ -88,7 +93,7 @@ fun HomeGrid(
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(home, key = { index, _ -> indexOffset + index }) { index, item ->
+            itemsIndexed(home, key = { index, _ -> motionKeys[index] }) { index, item ->
                 val globalIndex = indexOffset + index
                 HomeCell(
                     index = globalIndex,
@@ -97,7 +102,7 @@ fun HomeGrid(
                     activeDrag = activeDrag,
                     labelOf = labelOf,
                     isDragging = activeDrag == DragPayload.FromHome(globalIndex),
-                    onTap = { onCellTap(globalIndex) },
+                    onTap = { bounds -> onCellTap(globalIndex, bounds) },
                     onMenu = { onCellMenu(globalIndex) },
                     onDrop = { payload, position, stack ->
                         onDrop(globalIndex, payload, position, stack)
@@ -106,6 +111,11 @@ fun HomeGrid(
                     onDragMoved = onDragMoved,
                     onDragSessionStarted = onDragSessionStarted,
                     onDragSessionEnded = onDragSessionEnded,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = IosMotion.itemFadeInSpec,
+                        placementSpec = IosMotion.placementSpec,
+                        fadeOutSpec = IosMotion.itemFadeOutSpec,
+                    ),
                 )
             }
         }
@@ -120,13 +130,14 @@ private fun HomeCell(
     activeDrag: DragPayload?,
     labelOf: (AppRef) -> String,
     isDragging: Boolean,
-    onTap: () -> Unit,
+    onTap: (Rect?) -> Unit,
     onMenu: () -> Unit,
     onDrop: (DragPayload, Offset, Boolean) -> Boolean,
     canStack: (DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
     onDragSessionStarted: (DragPayload) -> Unit,
     onDragSessionEnded: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var pressed by remember { mutableStateOf(false) }
     var dropHovered by remember { mutableStateOf(false) }
@@ -194,7 +205,7 @@ private fun HomeCell(
             payload = payload,
             icon = dragIcon,
             folderIcons = folderDragIcons,
-            onTap = onTap,
+            onTap = { onTap(folderTargetBounds) },
             onPressChanged = { pressed = it },
             onDragStarted = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -204,7 +215,7 @@ private fun HomeCell(
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(rowHeight)
             .graphicsLayer {

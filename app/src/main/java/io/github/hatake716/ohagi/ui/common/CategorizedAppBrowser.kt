@@ -1,5 +1,12 @@
 package io.github.hatake716.ohagi.ui.common
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,14 +39,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -59,6 +70,12 @@ import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
+private sealed interface AppBrowserMode {
+    data object Overview : AppBrowserMode
+    data object Search : AppBrowserMode
+    data class Category(val category: AppCategory) : AppBrowserMode
+}
+
 /**
  * 通常ドロワーと全アプリピッカーで共有する、iOS App Library 風ブラウザー。
  *
@@ -72,7 +89,7 @@ fun CategorizedAppBrowser(
     query: String,
     selectedCategory: AppCategory?,
     onCategorySelected: (AppCategory?) -> Unit,
-    onPreviewAppClick: (AppInfo) -> Unit,
+    onPreviewAppClick: (AppInfo, Rect?) -> Unit,
     modifier: Modifier = Modifier,
     frequentApps: List<AppRef> = emptyList(),
     preferredApps: List<AppRef> = emptyList(),
@@ -91,89 +108,154 @@ fun CategorizedAppBrowser(
         }
     }
 
-    val categoryApps = remember(apps, selectedCategory) {
-        if (selectedCategory == null) emptyList()
-        else apps.filter { it.category == selectedCategory }
+    val browserMode = remember(query.isNotBlank(), selectedCategory) {
+        when {
+            query.isNotBlank() -> AppBrowserMode.Search
+            selectedCategory != null -> AppBrowserMode.Category(selectedCategory)
+            else -> AppBrowserMode.Overview
+        }
     }
 
-    when {
-        query.isNotBlank() -> AppGrid(
-            apps = matchingApps,
-            modifier = modifier,
-            appCell = appCell,
-        )
+    AnimatedContent(
+        targetState = browserMode,
+        transitionSpec = {
+            when {
+                initialState is AppBrowserMode.Overview &&
+                    targetState is AppBrowserMode.Category -> {
+                    (fadeIn(IosMotion.itemFadeInSpec) + scaleIn(
+                        animationSpec = tween(
+                            durationMillis = 220,
+                            easing = IosMotion.easeOut,
+                        ),
+                        initialScale = 0.94f,
+                    )).togetherWith(
+                        fadeOut(IosMotion.itemFadeOutSpec) + scaleOut(
+                            animationSpec = tween(
+                                durationMillis = 150,
+                                easing = IosMotion.easeIn,
+                            ),
+                            targetScale = 1.025f,
+                        ),
+                    )
+                }
 
-        selectedCategory != null -> AppGrid(
-            apps = categoryApps,
-            modifier = modifier,
-            appCell = appCell,
-        )
+                initialState is AppBrowserMode.Category &&
+                    targetState is AppBrowserMode.Overview -> {
+                    (fadeIn(IosMotion.itemFadeInSpec) + scaleIn(
+                        animationSpec = tween(
+                            durationMillis = 210,
+                            easing = IosMotion.easeOut,
+                        ),
+                        initialScale = 1.02f,
+                    )).togetherWith(
+                        fadeOut(IosMotion.itemFadeOutSpec) + scaleOut(
+                            animationSpec = tween(
+                                durationMillis = 160,
+                                easing = IosMotion.easeIn,
+                            ),
+                            targetScale = 0.94f,
+                        ),
+                    )
+                }
 
-        else -> {
-            val overview = remember(apps, frequentApps, preferredApps) {
-                buildAppBrowserOverviewContent(
-                    apps = apps,
-                    frequentAppRefs = frequentApps,
-                    preferredApps = preferredApps,
+                else -> {
+                    (fadeIn(IosMotion.itemFadeInSpec) + scaleIn(
+                        animationSpec = tween(
+                            durationMillis = IosMotion.STANDARD_FADE_MS,
+                            easing = IosMotion.easeOut,
+                        ),
+                        initialScale = 0.985f,
+                    )).togetherWith(fadeOut(IosMotion.itemFadeOutSpec))
+                }
+            }
+        },
+        label = "appBrowserMode",
+        modifier = modifier.fillMaxSize(),
+    ) { mode ->
+        when (mode) {
+            AppBrowserMode.Search -> AppGrid(
+                apps = matchingApps,
+                modifier = Modifier.fillMaxSize(),
+                appCell = appCell,
+            )
+
+            is AppBrowserMode.Category -> {
+                val categoryApps = remember(apps, mode.category) {
+                    apps.filter { it.category == mode.category }
+                }
+                AppGrid(
+                    apps = categoryApps,
+                    modifier = Modifier.fillMaxSize(),
+                    appCell = appCell,
                 )
             }
-            // カードごとのBoxWithConstraintsは、Pagerへ入る最初のフレームで
-            // 可視カード数だけSubcomposeを発生させる。グリッド幅から1回だけ
-            // 実寸を計算し、全カードへ共有する。
-            BoxWithConstraints(modifier = modifier) {
-                val cardWidth = (
-                    maxWidth -
-                        CATEGORY_GRID_HORIZONTAL_PADDING * 2 -
-                        CATEGORY_GRID_GAP
-                    ) / 2
-                val previewIconSize = minOf(
-                    APP_LIBRARY_PREVIEW_ICON_SIZE,
-                    (
-                        cardWidth -
-                            CATEGORY_CARD_HORIZONTAL_PADDING * 2 -
-                            APP_LIBRARY_PREVIEW_ICON_GAP
-                        ) / 2,
-                ).coerceAtLeast(1.dp)
 
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(
-                        start = CATEGORY_GRID_HORIZONTAL_PADDING,
-                        end = CATEGORY_GRID_HORIZONTAL_PADDING,
-                        top = 8.dp,
-                        bottom = 28.dp,
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(CATEGORY_GRID_GAP),
-                    verticalArrangement = Arrangement.spacedBy(CATEGORY_GRID_GAP),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    if (overview.frequentApps.isNotEmpty()) {
-                        item(
-                            key = "frequent_apps",
-                            span = { GridItemSpan(maxLineSpan) },
-                            contentType = "frequent_apps",
-                        ) {
-                            FrequentAppsCard(
-                                apps = overview.frequentApps,
+            AppBrowserMode.Overview -> {
+                val overview = remember(apps, frequentApps, preferredApps) {
+                    buildAppBrowserOverviewContent(
+                        apps = apps,
+                        frequentAppRefs = frequentApps,
+                        preferredApps = preferredApps,
+                    )
+                }
+                // カードごとのBoxWithConstraintsは、Pagerへ入る最初のフレームで
+                // 可視カード数だけSubcomposeを発生させる。グリッド幅から1回だけ
+                // 実寸を計算し、全カードへ共有する。
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val cardWidth = (
+                        maxWidth -
+                            CATEGORY_GRID_HORIZONTAL_PADDING * 2 -
+                            CATEGORY_GRID_GAP
+                        ) / 2
+                    val previewIconSize = minOf(
+                        APP_LIBRARY_PREVIEW_ICON_SIZE,
+                        (
+                            cardWidth -
+                                CATEGORY_CARD_HORIZONTAL_PADDING * 2 -
+                                APP_LIBRARY_PREVIEW_ICON_GAP
+                            ) / 2,
+                    ).coerceAtLeast(1.dp)
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        contentPadding = PaddingValues(
+                            start = CATEGORY_GRID_HORIZONTAL_PADDING,
+                            end = CATEGORY_GRID_HORIZONTAL_PADDING,
+                            top = 8.dp,
+                            bottom = 28.dp,
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(CATEGORY_GRID_GAP),
+                        verticalArrangement = Arrangement.spacedBy(CATEGORY_GRID_GAP),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        if (overview.frequentApps.isNotEmpty()) {
+                            item(
+                                key = "frequent_apps",
+                                span = { GridItemSpan(maxLineSpan) },
+                                contentType = "frequent_apps",
+                            ) {
+                                FrequentAppsCard(
+                                    apps = overview.frequentApps,
+                                    selectedApps = selectedApps,
+                                    onAppClick = onPreviewAppClick,
+                                )
+                            }
+                        }
+                        items(
+                            items = overview.categoryGroups,
+                            key = { it.first.name },
+                            contentType = { "category" },
+                        ) { (category, groupedApps) ->
+                            val title = appCategoryTitle(category)
+                            CategoryCard(
+                                title = title,
+                                apps = groupedApps,
                                 selectedApps = selectedApps,
+                                previewIconSize = previewIconSize,
+                                onOpenCategory = { onCategorySelected(category) },
                                 onAppClick = onPreviewAppClick,
                             )
                         }
-                    }
-                    items(
-                        items = overview.categoryGroups,
-                        key = { it.first.name },
-                        contentType = { "category" },
-                    ) { (category, groupedApps) ->
-                        val title = appCategoryTitle(category)
-                        CategoryCard(
-                            title = title,
-                            apps = groupedApps,
-                            selectedApps = selectedApps,
-                            previewIconSize = previewIconSize,
-                            onOpenCategory = { onCategorySelected(category) },
-                            onAppClick = onPreviewAppClick,
-                        )
                     }
                 }
             }
@@ -186,7 +268,7 @@ fun CategorizedAppBrowser(
 private fun FrequentAppsCard(
     apps: List<AppInfo>,
     selectedApps: Set<AppRef>,
-    onAppClick: (AppInfo) -> Unit,
+    onAppClick: (AppInfo, Rect?) -> Unit,
 ) {
     val visibleApps = remember(apps) { apps.take(FREQUENT_APP_LIMIT) }
     val appRows = remember(visibleApps) { visibleApps.chunked(FREQUENT_APP_COLUMNS) }
@@ -231,7 +313,7 @@ private fun FrequentAppsCard(
                             app = app,
                             icon = icons.getOrNull(index),
                             selected = app.ref in selectedApps,
-                            onClick = { onAppClick(app) },
+                            onClick = { bounds -> onAppClick(app, bounds) },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -246,9 +328,10 @@ private fun FrequentAppCell(
     app: AppInfo,
     icon: ImageBitmap?,
     selected: Boolean,
-    onClick: () -> Unit,
+    onClick: (Rect?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var iconBounds by remember(app.ref) { androidx.compose.runtime.mutableStateOf<Rect?>(null) }
     val interactionSource = remember(app.ref) { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale = animateIosPressScale(
@@ -266,13 +349,14 @@ private fun FrequentAppCell(
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick,
+                onClick = { onClick(iconBounds) },
             )
             .padding(horizontal = 2.dp, vertical = 4.dp),
     ) {
         Box(
             modifier = Modifier
                 .size(FREQUENT_APP_ICON_SIZE)
+                .onGloballyPositioned { iconBounds = it.boundsInRoot() }
                 .drawWithContent {
                     scale(scaleX = scale, scaleY = scale) {
                         this@drawWithContent.drawContent()
@@ -377,7 +461,7 @@ private fun CategoryCard(
     selectedApps: Set<AppRef>,
     previewIconSize: Dp,
     onOpenCategory: () -> Unit,
-    onAppClick: (AppInfo) -> Unit,
+    onAppClick: (AppInfo, Rect?) -> Unit,
 ) {
     val cardShape = RoundedCornerShape(24.dp)
     val interactionSource = remember { MutableInteractionSource() }
@@ -465,7 +549,7 @@ private fun CategoryCard(
                         app = app,
                         icon = previewIcons.getOrNull(2),
                         selected = app.ref in selectedApps,
-                        onClick = { onAppClick(app) },
+                        onClick = { bounds -> onAppClick(app, bounds) },
                         size = previewIconSize,
                     )
                 } ?: PreviewPlaceholder(previewIconSize)
@@ -487,7 +571,7 @@ private fun PreviewRow(
     apps: List<AppInfo>,
     icons: List<ImageBitmap?>,
     selectedApps: Set<AppRef>,
-    onAppClick: (AppInfo) -> Unit,
+    onAppClick: (AppInfo, Rect?) -> Unit,
     iconSize: Dp,
 ) {
     Row(
@@ -504,7 +588,7 @@ private fun PreviewRow(
                     app = app,
                     icon = icons.getOrNull(index),
                     selected = app.ref in selectedApps,
-                    onClick = { onAppClick(app) },
+                    onClick = { bounds -> onAppClick(app, bounds) },
                     size = iconSize,
                 )
             } ?: PreviewPlaceholder(iconSize)
@@ -517,9 +601,10 @@ private fun CategoryPreviewIcon(
     app: AppInfo,
     icon: ImageBitmap?,
     selected: Boolean,
-    onClick: () -> Unit,
+    onClick: (Rect?) -> Unit,
     size: Dp,
 ) {
+    var iconBounds by remember(app.ref) { androidx.compose.runtime.mutableStateOf<Rect?>(null) }
     val interactionSource = remember(app.ref) { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale = animateIosPressScale(
@@ -529,6 +614,7 @@ private fun CategoryPreviewIcon(
     Box(
         modifier = Modifier
             .size(size)
+            .onGloballyPositioned { iconBounds = it.boundsInRoot() }
             .drawWithContent {
                 scale(scaleX = scale, scaleY = scale) { this@drawWithContent.drawContent() }
             }
@@ -539,7 +625,7 @@ private fun CategoryPreviewIcon(
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick,
+                onClick = { onClick(iconBounds) },
             ),
     ) {
         AppIconImage(icon = icon, size = size, decorated = false)

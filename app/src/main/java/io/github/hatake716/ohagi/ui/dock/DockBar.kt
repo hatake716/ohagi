@@ -6,12 +6,16 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -45,6 +49,8 @@ import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
+import io.github.hatake716.ohagi.ui.common.IosMotion
+import io.github.hatake716.ohagi.ui.common.dockMotionKeys
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
@@ -64,7 +70,7 @@ fun DockBar(
     dock: List<DockItem?>,
     activeDrag: DragPayload?,
     labelOf: (AppRef) -> String,
-    onSlotTap: (Int) -> Unit,
+    onSlotTap: (Int, Rect?) -> Unit,
     onSlotMenu: (Int) -> Unit,
     onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
     canStack: (Int, DragPayload) -> Boolean,
@@ -74,8 +80,11 @@ fun DockBar(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(30.dp)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    val slots = remember(dock) {
+        List(LayoutState.DOCK_SLOT_COUNT) { slot -> dock.getOrNull(slot) }
+    }
+    val motionKeys = remember(slots) { dockMotionKeys(slots) }
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
             .height(84.dp)
@@ -92,27 +101,46 @@ fun DockBar(
                     listOf(Color(0x8A27222B), Color(0xA317141A)),
                 ),
             )
-            .border(0.75.dp, TileBorder.copy(alpha = 0.72f), shape)
-            .padding(horizontal = 8.dp),
+            .border(0.75.dp, TileBorder.copy(alpha = 0.72f), shape),
     ) {
-        for (slot in 0 until LayoutState.DOCK_SLOT_COUNT) {
-            DockSlot(
-                slot = slot,
-                item = dock.getOrNull(slot),
-                activeDrag = activeDrag,
-                labelOf = labelOf,
-                isDragging = activeDrag == DragPayload.FromDock(slot),
-                onTap = { onSlotTap(slot) },
-                onMenu = { onSlotMenu(slot) },
-                onDrop = { payload, position, stack ->
-                    onDrop(slot, payload, position, stack)
-                },
-                canStack = { payload -> canStack(slot, payload) },
-                onDragMoved = onDragMoved,
-                onDragSessionStarted = onDragSessionStarted,
-                onDragSessionEnded = onDragSessionEnded,
-                modifier = Modifier.weight(1f),
-            )
+        val slotWidth = (maxWidth - 16.dp) / LayoutState.DOCK_SLOT_COUNT
+        LazyRow(
+            userScrollEnabled = false,
+            contentPadding = PaddingValues(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
+            itemsIndexed(
+                items = slots,
+                key = { slot, _ -> motionKeys[slot] },
+            ) { slot, item ->
+                DockSlot(
+                    slot = slot,
+                    item = item,
+                    activeDrag = activeDrag,
+                    labelOf = labelOf,
+                    isDragging = activeDrag == DragPayload.FromDock(slot),
+                    onTap = { bounds -> onSlotTap(slot, bounds) },
+                    onMenu = { onSlotMenu(slot) },
+                    onDrop = { payload, position, stack ->
+                        onDrop(slot, payload, position, stack)
+                    },
+                    canStack = { payload -> canStack(slot, payload) },
+                    onDragMoved = onDragMoved,
+                    onDragSessionStarted = onDragSessionStarted,
+                    onDragSessionEnded = onDragSessionEnded,
+                    modifier = Modifier
+                        .width(slotWidth)
+                        .fillMaxHeight()
+                        .animateItem(
+                            fadeInSpec = IosMotion.itemFadeInSpec,
+                            placementSpec = IosMotion.placementSpec,
+                            fadeOutSpec = IosMotion.itemFadeOutSpec,
+                        ),
+                )
+            }
         }
     }
 }
@@ -126,7 +154,7 @@ private fun DockSlot(
     activeDrag: DragPayload?,
     labelOf: (AppRef) -> String,
     isDragging: Boolean,
-    onTap: () -> Unit,
+    onTap: (Rect?) -> Unit,
     onMenu: () -> Unit,
     onDrop: (DragPayload, Offset, Boolean) -> Boolean,
     canStack: (DragPayload) -> Boolean,
@@ -207,7 +235,7 @@ private fun DockSlot(
             payload = payload,
             icon = dragIcon,
             folderIcons = folderDragIcons,
-            onTap = onTap,
+            onTap = { onTap(folderTargetBounds) },
             onPressChanged = { pressed = it },
             onDragStarted = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)

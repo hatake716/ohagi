@@ -1,8 +1,8 @@
 package io.github.hatake716.ohagi.ui.folder
 
-import androidx.compose.animation.animateColorAsState
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,7 +28,11 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +76,9 @@ import io.github.hatake716.ohagi.data.FolderLocation
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.IOS_SELECTION_BLUE
 import io.github.hatake716.ohagi.ui.common.IosGlassIconButton
+import io.github.hatake716.ohagi.ui.common.IosMotion
+import io.github.hatake716.ohagi.ui.common.folderMotionKeys
+import io.github.hatake716.ohagi.ui.common.iosPageDistance
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
@@ -79,6 +88,7 @@ import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
 import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
+import kotlinx.coroutines.launch
 import kotlin.math.max
 
 private const val APPS_PER_FOLDER_PAGE = 9
@@ -95,11 +105,12 @@ private const val APPS_PER_FOLDER_PAGE = 9
 @Composable
 fun IosFolderOverlay(
     location: FolderLocation,
+    sourceBounds: Rect?,
     folderName: String,
     apps: List<AppRef>,
     labelOf: (AppRef) -> String,
     activeDrag: DragPayload?,
-    onLaunch: (AppRef) -> Unit,
+    onLaunch: (AppRef, Rect?) -> Unit,
     onAddApps: () -> Unit,
     onRemoveApp: (AppRef) -> Unit,
     onRename: () -> Unit,
@@ -110,20 +121,38 @@ fun IosFolderOverlay(
     onDragOutside: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var entered by remember(location) { mutableStateOf(false) }
     var editMode by remember { mutableStateOf(false) }
     var panelBounds by remember { mutableStateOf<Rect?>(null) }
     var dragOutRequested by remember { mutableStateOf(false) }
     var sessionPayload by remember { mutableStateOf<DragPayload?>(null) }
+    var closing by remember(location) { mutableStateOf(false) }
+    val reveal = remember(location) { Animatable(0f) }
+    val scope = rememberCoroutineScope()
 
     val pageCount = max(1, (apps.size + APPS_PER_FOLDER_PAGE - 1) / APPS_PER_FOLDER_PAGE)
     val pagerState = rememberPagerState(pageCount = { pageCount })
-    LaunchedEffect(location) { entered = true }
-    val reveal by animateFloatAsState(
-        targetValue = if (entered) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.86f, stiffness = 560f),
-        label = "folderOpenReveal",
+    val pageSnapSpec = remember {
+        spring<Float>(
+            dampingRatio = IosMotion.PAGE_SNAP_DAMPING,
+            stiffness = IosMotion.PAGE_SNAP_STIFFNESS,
+        )
+    }
+    val pagerFlingBehavior = PagerDefaults.flingBehavior(
+        state = pagerState,
+        snapAnimationSpec = pageSnapSpec,
+        snapPositionalThreshold = IosMotion.PAGE_POSITIONAL_THRESHOLD,
     )
+    LaunchedEffect(location, panelBounds) {
+        if (panelBounds != null && !closing && reveal.value == 0f) {
+            reveal.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = IosMotion.FOLDER_OPEN_DAMPING,
+                    stiffness = IosMotion.FOLDER_OPEN_STIFFNESS,
+                ),
+            )
+        }
+    }
     LaunchedEffect(pageCount) {
         if (pagerState.currentPage >= pageCount) {
             pagerState.scrollToPage(pageCount - 1)
@@ -163,6 +192,23 @@ fun IosFolderOverlay(
         onDragEnded()
     }
 
+    fun requestDismiss() {
+        if (closing) return
+        closing = true
+        scope.launch {
+            reveal.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = IosMotion.FOLDER_CLOSE_DAMPING,
+                    stiffness = IosMotion.FOLDER_CLOSE_STIFFNESS,
+                ),
+            )
+            onDismiss()
+        }
+    }
+
+    BackHandler(enabled = !closing) { requestDismiss() }
+
     val backgroundDropTarget = rememberOhagiDropTarget(
         onStarted = ::handleDragStarted,
         onMoved = ::handleDragMoved,
@@ -174,30 +220,56 @@ fun IosFolderOverlay(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.42f * reveal))
+            .background(Color.Black.copy(alpha = 0.46f * reveal.value))
             .ohagiDropTarget(backgroundDropTarget)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onDismiss,
+                onClick = ::requestDismiss,
             )
             .safeDrawingPadding()
             .padding(horizontal = 18.dp, vertical = 30.dp),
     ) {
         val panelShape = RoundedCornerShape(38.dp)
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Box(
             modifier = Modifier
                 .widthIn(max = 390.dp)
                 .fillMaxWidth()
                 .heightIn(min = 430.dp, max = 520.dp)
-                .graphicsLayer {
-                    alpha = reveal
-                    val scale = 0.80f + reveal * 0.20f
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .onGloballyPositioned { panelBounds = it.boundsInRoot() }
+                .onGloballyPositioned { panelBounds = it.boundsInRoot() },
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val progress = reveal.value.coerceIn(0f, 1f)
+                        val finalBounds = panelBounds
+                        val originBounds = sourceBounds
+                        val startScale = if (
+                            finalBounds != null && originBounds != null && finalBounds.width > 0f
+                        ) {
+                            (originBounds.width / finalBounds.width).coerceIn(0.16f, 0.82f)
+                        } else {
+                            0.82f
+                        }
+                        val startTranslationX = if (finalBounds != null && originBounds != null) {
+                            originBounds.center.x - finalBounds.center.x
+                        } else {
+                            0f
+                        }
+                        val startTranslationY = if (finalBounds != null && originBounds != null) {
+                            originBounds.center.y - finalBounds.center.y
+                        } else {
+                            0f
+                        }
+                        alpha = (reveal.value * 1.35f).coerceIn(0f, 1f)
+                        val scale = startScale + (1f - startScale) * progress
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = startTranslationX * (1f - progress)
+                        translationY = startTranslationY * (1f - progress)
+                    }
                 .shadow(
                     elevation = 26.dp,
                     shape = panelShape,
@@ -217,13 +289,13 @@ fun IosFolderOverlay(
                     indication = null,
                 ) {}
                 .padding(top = 10.dp, bottom = 14.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                ) {
                 TextButton(onClick = { editMode = !editMode }) {
                     Text(
                         text = stringResource(
@@ -274,25 +346,43 @@ fun IosFolderOverlay(
 
             HorizontalPager(
                 state = pagerState,
+                flingBehavior = pagerFlingBehavior,
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(342.dp),
             ) { page ->
-                FolderPage(
-                    location = location,
-                    page = page,
-                    apps = apps,
-                    labelOf = labelOf,
-                    activeDrag = activeDrag,
-                    editMode = editMode,
-                    onLaunch = onLaunch,
-                    onRemoveApp = onRemoveApp,
-                    onReorder = onReorder,
-                    onDragMoved = ::handleDragMoved,
-                    onDragStarted = ::handleDragStarted,
-                    onDragEnded = ::handleDragEnded,
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val distance = iosPageDistance(
+                                currentPage = pagerState.currentPage,
+                                currentPageOffsetFraction = pagerState.currentPageOffsetFraction,
+                                page = page,
+                            )
+                            val centered = 1f - distance
+                            val scale = 0.975f + 0.025f * centered
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = 0.88f + 0.12f * centered
+                        },
+                ) {
+                    FolderPage(
+                        location = location,
+                        page = page,
+                        apps = apps,
+                        labelOf = labelOf,
+                        activeDrag = activeDrag,
+                        editMode = editMode,
+                        onLaunch = onLaunch,
+                        onRemoveApp = onRemoveApp,
+                        onReorder = onReorder,
+                        onDragMoved = ::handleDragMoved,
+                        onDragStarted = ::handleDragStarted,
+                        onDragEnded = ::handleDragEnded,
+                    )
+                }
             }
 
             Row(
@@ -300,27 +390,28 @@ fun IosFolderOverlay(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.height(20.dp),
             ) {
+                val pagePosition = pagerState.currentPage +
+                    pagerState.currentPageOffsetFraction
                 repeat(pageCount) { page ->
-                    val selected = pagerState.currentPage == page
-                    val color by animateColorAsState(
-                        targetValue = if (selected) {
-                            Kome.copy(alpha = 0.95f)
-                        } else {
-                            Kome.copy(alpha = 0.30f)
-                        },
-                        animationSpec = tween(durationMillis = 120),
-                        label = "folderPageDot",
-                    )
+                    val proximity = 1f -
+                        kotlin.math.abs(page - pagePosition).coerceIn(0f, 1f)
                     Box(
                         Modifier
-                            .size(if (selected) 7.dp else 6.dp)
+                            .size(7.dp)
+                            .graphicsLayer {
+                                alpha = 0.30f + 0.65f * proximity
+                                val scale = 0.86f + 0.14f * proximity
+                                scaleX = scale
+                                scaleY = scale
+                            }
                             .clip(CircleShape)
-                            .background(color),
+                            .background(Kome),
                     )
                 }
             }
         }
     }
+}
 }
 
 @Composable
@@ -331,51 +422,61 @@ private fun FolderPage(
     labelOf: (AppRef) -> String,
     activeDrag: DragPayload?,
     editMode: Boolean,
-    onLaunch: (AppRef) -> Unit,
+    onLaunch: (AppRef, Rect?) -> Unit,
     onRemoveApp: (AppRef) -> Unit,
     onReorder: (Int, Int) -> Unit,
     onDragMoved: (Offset) -> Unit,
     onDragStarted: (DragPayload) -> Unit,
     onDragEnded: () -> Unit,
 ) {
-    Column(
+    val indexOffset = page * APPS_PER_FOLDER_PAGE
+    val pageApps = remember(apps, page) {
+        List<AppRef?>(APPS_PER_FOLDER_PAGE) { localIndex ->
+            apps.getOrNull(indexOffset + localIndex)
+        }
+    }
+    val motionKeys = remember(pageApps, indexOffset) {
+        folderMotionKeys(pageApps, indexOffset)
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        userScrollEnabled = false,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.SpaceEvenly,
         modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .fillMaxSize(),
     ) {
-        repeat(3) { row ->
-            Row(
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
+        itemsIndexed(
+            items = pageApps,
+            key = { localIndex, _ -> motionKeys[localIndex] },
+        ) { localIndex, app ->
+            val globalIndex = indexOffset + localIndex
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .height(110.dp)
+                    .animateItem(
+                        fadeInSpec = IosMotion.itemFadeInSpec,
+                        placementSpec = IosMotion.placementSpec,
+                        fadeOutSpec = IosMotion.itemFadeOutSpec,
+                    ),
             ) {
-                repeat(3) { column ->
-                    val globalIndex = page * APPS_PER_FOLDER_PAGE + row * 3 + column
-                    val app = apps.getOrNull(globalIndex)
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        if (app != null) {
-                            FolderAppCell(
-                                location = location,
-                                app = app,
-                                appIndex = globalIndex,
-                                labelOf = labelOf,
-                                activeDrag = activeDrag,
-                                editMode = editMode,
-                                onLaunch = { onLaunch(app) },
-                                onRemove = { onRemoveApp(app) },
-                                onReorder = onReorder,
-                                onDragMoved = onDragMoved,
-                                onDragStarted = onDragStarted,
-                                onDragEnded = onDragEnded,
-                            )
-                        }
-                    }
+                if (app != null) {
+                    FolderAppCell(
+                        location = location,
+                        app = app,
+                        appIndex = globalIndex,
+                        labelOf = labelOf,
+                        activeDrag = activeDrag,
+                        editMode = editMode,
+                        onLaunch = { bounds -> onLaunch(app, bounds) },
+                        onRemove = { onRemoveApp(app) },
+                        onReorder = onReorder,
+                        onDragMoved = onDragMoved,
+                        onDragStarted = onDragStarted,
+                        onDragEnded = onDragEnded,
+                    )
                 }
             }
         }
@@ -390,7 +491,7 @@ private fun FolderAppCell(
     labelOf: (AppRef) -> String,
     activeDrag: DragPayload?,
     editMode: Boolean,
-    onLaunch: () -> Unit,
+    onLaunch: (Rect?) -> Unit,
     onRemove: () -> Unit,
     onReorder: (Int, Int) -> Unit,
     onDragMoved: (Offset) -> Unit,
@@ -400,6 +501,7 @@ private fun FolderAppCell(
     val label = labelOf(app)
     var pressed by remember { mutableStateOf(false) }
     var dropHovered by remember { mutableStateOf(false) }
+    var iconBounds by remember(app) { mutableStateOf<Rect?>(null) }
     val haptic = LocalHapticFeedback.current
     val icon by rememberAppIconBitmap(app)
     val payload = remember(location, appIndex, app) {
@@ -474,7 +576,7 @@ private fun FolderAppCell(
             .ohagiDragSource(
                 payload = payload,
                 icon = icon,
-                onTap = { if (!editMode) onLaunch() },
+                onTap = { if (!editMode) onLaunch(iconBounds) },
                 onPressChanged = { pressed = it },
                 onDragStarted = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -483,7 +585,9 @@ private fun FolderAppCell(
             )
             .padding(horizontal = 4.dp, vertical = 6.dp),
     ) {
-        Box {
+        Box(
+            modifier = Modifier.onGloballyPositioned { iconBounds = it.boundsInRoot() },
+        ) {
             AppIconImage(icon = icon, size = 58.dp)
             if (editMode) {
                 Box(

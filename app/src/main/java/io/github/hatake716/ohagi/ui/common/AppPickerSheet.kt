@@ -183,7 +183,7 @@ fun AppPickerSheet(
                 query = query,
                 selectedCategory = selectedCategory,
                 onCategorySelected = { selectedCategory = it },
-                onPreviewAppClick = ::select,
+                onPreviewAppClick = { app, _ -> select(app) },
                 frequentApps = frequentApps,
                 preferredApps = preferredApps,
                 selectedApps = selectedRefs,

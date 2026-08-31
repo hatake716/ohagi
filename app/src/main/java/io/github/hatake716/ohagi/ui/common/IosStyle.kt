@@ -1,6 +1,5 @@
 package io.github.hatake716.ohagi.ui.common
 
-import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -73,9 +72,9 @@ fun animateIosPressScale(
 ): Float = animateFloatAsState(
     targetValue = if (pressed) pressedScale else 1f,
     animationSpec = if (pressed) {
-        tween(durationMillis = 85, easing = FastOutLinearInEasing)
+        IosMotion.pressDownSpec
     } else {
-        spring(dampingRatio = 0.82f, stiffness = 780f)
+        IosMotion.pressReleaseSpec
     },
     label = label,
 ).value
@@ -98,7 +97,7 @@ fun rememberIosDragVisualState(
 ): IosDragVisualState {
     val interactionScale by animateFloatAsState(
         targetValue = when {
-            isDragging -> 0.87f
+            isDragging -> 0.90f
             folderReady -> 1.065f
             dropHovered -> 1.04f
             pressed -> IOS_PRESSED_SCALE
@@ -106,17 +105,24 @@ fun rememberIosDragVisualState(
         },
         animationSpec = when {
             pressed && !isDragging && !dropHovered ->
-                tween(durationMillis = 85, easing = FastOutLinearInEasing)
-            isDragging -> spring(dampingRatio = 0.84f, stiffness = 760f)
-            folderReady -> spring(dampingRatio = 0.68f, stiffness = 430f)
-            dropHovered -> spring(dampingRatio = 0.76f, stiffness = 560f)
-            else -> spring(dampingRatio = 0.64f, stiffness = 620f)
+                IosMotion.pressDownSpec
+            isDragging -> spring(dampingRatio = 0.88f, stiffness = 720f)
+            folderReady -> spring(dampingRatio = 0.72f, stiffness = 420f)
+            dropHovered -> spring(dampingRatio = 0.82f, stiffness = 520f)
+            else -> spring(dampingRatio = 0.72f, stiffness = 610f)
         },
         label = "${label}InteractionScale",
     )
     val sourceAlpha by animateFloatAsState(
         targetValue = if (isDragging) IOS_DRAG_SOURCE_ALPHA else 1f,
-        animationSpec = tween(durationMillis = if (isDragging) 90 else 140),
+        animationSpec = tween(
+            durationMillis = if (isDragging) {
+                IosMotion.QUICK_FADE_MS
+            } else {
+                IosMotion.STANDARD_FADE_MS
+            },
+            easing = if (isDragging) IosMotion.easeIn else IosMotion.easeOut,
+        ),
         label = "${label}SourceAlpha",
     )
     val landingScale = remember { Animatable(1f) }
@@ -129,7 +135,7 @@ fun rememberIosDragVisualState(
                 landingScale.snapTo(if (emphasized) 1.02f else 1.065f)
                 landingScale.animateTo(
                     targetValue = 1f,
-                    animationSpec = spring(dampingRatio = 0.56f, stiffness = 520f),
+                    animationSpec = spring(dampingRatio = 0.68f, stiffness = 470f),
                 )
             }
             Unit

@@ -1,6 +1,7 @@
 package io.github.hatake716.ohagi.util
 
 import android.app.Activity
+import android.app.ActivityOptions
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
@@ -15,6 +16,23 @@ import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppRef
 
 object LaunchUtils {
+
+    /** タップしたアイコン矩形から画面全体へ拡大する、Android標準の起動遷移。 */
+    fun scaleUpAnimationOptions(
+        activity: Activity,
+        sourceBounds: LaunchBounds?,
+    ): Bundle? {
+        val source = activity.findViewById<android.view.View>(android.R.id.content)
+            ?: activity.window.decorView
+        val bounds = sourceBounds?.clippedTo(source.width, source.height) ?: return null
+        return ActivityOptions.makeScaleUpAnimation(
+            source,
+            bounds.left,
+            bounds.top,
+            bounds.width,
+            bounds.height,
+        ).toBundle()
+    }
 
     /**
      * アプリを通常(フルスクリーン)起動する。コンポーネントが消えていた場合は
