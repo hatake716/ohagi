@@ -74,6 +74,7 @@ import io.github.hatake716.ohagi.data.folderAt
 import io.github.hatake716.ohagi.data.homeGlobalIndex
 import io.github.hatake716.ohagi.data.homePage
 import io.github.hatake716.ohagi.data.homePageCount
+import io.github.hatake716.ohagi.data.preferredAppRefs
 import io.github.hatake716.ohagi.ui.common.AppPickerSheet
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
@@ -132,6 +133,7 @@ fun HomeScreen(
 
     val latestLayout by graph.layoutRepository.state.collectAsStateWithLifecycle()
     val latestApps by graph.appRepository.apps.collectAsStateWithLifecycle()
+    val rankedLaunches by graph.usageRepository.rankedApps.collectAsStateWithLifecycle()
 
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
     var layout by remember { mutableStateOf(latestLayout) }
@@ -159,6 +161,9 @@ fun HomeScreen(
         apps = latestApps
     }
     val appLabelOf = remember(apps) { buildAppLabelResolver(apps) }
+    val preferredApps = remember(layout.home, layout.dock, rankedLaunches) {
+        layout.preferredAppRefs(rankedLaunches)
+    }
     val appLibraryPage = layout.homePageCount + 1
 
     // HOME再押下ではオーバーレイを閉じ、必ず1枚目のホームへ戻る。
@@ -197,7 +202,7 @@ fun HomeScreen(
     val defaultFolderName = stringResource(R.string.dock_folder_default_name)
     val density = LocalDensity.current
     val edgeZonePx = with(density) { HOME_PAGE_EDGE_ZONE.toPx() }
-    val appLibraryIconRequests = remember(apps, density.density) {
+    val appLibraryIconRequests = remember(apps, preferredApps, density.density) {
         val prefetchBudget = appLibraryPrefetchBudget(graph.appRepository.isLowRamDevice)
         buildAppLibraryIconPrefetchRequests(
             apps = apps,
@@ -209,6 +214,7 @@ fun HomeScreen(
             },
             categoryLimit = prefetchBudget.fullCategoryCount,
             partialCategoryLimit = prefetchBudget.partialCategoryCount,
+            preferredApps = preferredApps,
         )
     }
     // 初期ホームが落ち着いた時だけ、Appライブラリ上端の画像を画面外で用意する。
@@ -828,6 +834,7 @@ fun HomeScreen(
 
                 page == appLibraryPage -> AppDrawer(
                     apps = apps,
+                    preferredApps = preferredApps,
                     onLaunch = { app -> openApp(app.ref) },
                     onAddToDock = { app -> overlay = Overlay.DockSlotChooser(app.ref) },
                     onAppInfo = { app ->
@@ -1113,6 +1120,7 @@ fun HomeScreen(
             }
             AppPickerSheet(
                 apps = apps,
+                preferredApps = preferredApps,
                 multiSelect = target is PickTarget.FolderAdd ||
                     target is PickTarget.FolderCreate,
                 excluded = excluded,

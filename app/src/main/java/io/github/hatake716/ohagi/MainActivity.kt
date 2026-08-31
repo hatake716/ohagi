@@ -217,8 +217,10 @@ class MainActivity : ComponentActivity() {
         // 起動Intentを最優先でOSへ渡す。通知の組み立て/Binder呼び出しは、
         // 画面遷移開始後にアプリプロセスの直列IO workerで行う。
         if (!LaunchUtils.launch(this, app)) return
+        val graph = (application as OhagiApp).graph
+        graph.usageRepository.recordLaunch(app)
         if (canNotify) {
-            val appLabel = (application as OhagiApp).graph.appRepository.labelOf(app)
+            val appLabel = graph.appRepository.labelOf(app)
             SplitLaunchNotification.postAsync(applicationContext, app, appLabel)
         }
     }

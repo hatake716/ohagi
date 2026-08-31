@@ -123,6 +123,30 @@ data class LayoutState(
     }
 }
 
+/**
+ * ohagi内の起動履歴を最優先にし、履歴のないアプリは利用者が自分で置いた
+ * Dock／ホームの順で補う。フォルダ内も保持し、同じアプリ参照は1件にまとめる。
+ */
+fun LayoutState.preferredAppRefs(
+    rankedLaunches: List<AppRef> = emptyList(),
+): List<AppRef> = buildList {
+    addAll(rankedLaunches)
+    dock.forEach { item ->
+        when (item) {
+            is DockItem.DockApp -> add(item.app)
+            is DockItem.DockFolder -> addAll(item.apps)
+            null -> Unit
+        }
+    }
+    home.forEach { item ->
+        when (item) {
+            is HomeItem.HomeApp -> add(item.app)
+            is HomeItem.HomeFolder -> addAll(item.apps)
+            null -> Unit
+        }
+    }
+}.distinct()
+
 /** 永続化されたホームページ数。正規化前の空配列でも最低1ページとして扱う。 */
 val LayoutState.homePageCount: Int
     get() = ((home.size + LayoutState.HOME_CELL_COUNT - 1) / LayoutState.HOME_CELL_COUNT)

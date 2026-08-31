@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppCategory
 import io.github.hatake716.ohagi.data.AppInfo
+import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.common.AppIcon
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.CategorizedAppBrowser
@@ -70,6 +71,7 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 @Composable
 fun AppDrawer(
     apps: List<AppInfo>,
+    preferredApps: List<AppRef>,
     onLaunch: (AppInfo) -> Unit,
     onAddToDock: (AppInfo) -> Unit,
     onAppInfo: (AppInfo) -> Unit,
@@ -153,6 +155,7 @@ fun AppDrawer(
             selectedCategory = selectedCategory,
             onCategorySelected = { selectedCategory = it },
             onPreviewAppClick = onLaunch,
+            preferredApps = preferredApps,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),

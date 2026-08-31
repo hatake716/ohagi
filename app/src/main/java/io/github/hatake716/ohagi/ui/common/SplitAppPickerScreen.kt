@@ -34,6 +34,7 @@ import io.github.hatake716.ohagi.LocalGraph
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.AppCategory
 import io.github.hatake716.ohagi.data.AppRef
+import io.github.hatake716.ohagi.data.preferredAppRefs
 import io.github.hatake716.ohagi.ui.theme.Ink
 import io.github.hatake716.ohagi.ui.theme.Kome
 
@@ -46,10 +47,21 @@ fun SplitAppPickerScreen(
 ) {
     val graph = LocalGraph.current
     val apps by graph.appRepository.apps.collectAsStateWithLifecycle()
+    val layout by graph.layoutRepository.state.collectAsStateWithLifecycle()
+    val rankedLaunches by graph.usageRepository.rankedApps.collectAsStateWithLifecycle()
     var query by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<AppCategory?>(null) }
     val availableApps = remember(apps, firstApp.packageName) {
         apps.filter { it.ref.packageName != firstApp.packageName }
+    }
+    val preferredApps = remember(
+        layout.home,
+        layout.dock,
+        rankedLaunches,
+        firstApp.packageName,
+    ) {
+        layout.preferredAppRefs(rankedLaunches)
+            .filterNot { it.packageName == firstApp.packageName }
     }
     val firstLabel = remember(apps, firstApp) {
         apps.firstOrNull { it.ref == firstApp }?.label
@@ -138,6 +150,7 @@ fun SplitAppPickerScreen(
                 selectedCategory = selectedCategory,
                 onCategorySelected = { selectedCategory = it },
                 onPreviewAppClick = { onSelectApp(it.ref) },
+                preferredApps = preferredApps,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),

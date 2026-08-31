@@ -3,6 +3,7 @@ package io.github.hatake716.ohagi.ui.common
 import io.github.hatake716.ohagi.data.AppCategory
 import io.github.hatake716.ohagi.data.AppIconRequest
 import io.github.hatake716.ohagi.data.AppInfo
+import io.github.hatake716.ohagi.data.AppRef
 
 /**
  * Appライブラリ上端で直ちに見えるカテゴリーカードのアイコンだけを先読みする。
@@ -17,6 +18,7 @@ internal fun buildAppLibraryIconPrefetchRequests(
     miniIconSizePx: Int,
     categoryLimit: Int = APP_LIBRARY_PREFETCH_CATEGORY_COUNT,
     partialCategoryLimit: Int = 0,
+    preferredApps: List<AppRef> = emptyList(),
 ): List<AppIconRequest> {
     if (apps.isEmpty() || categoryLimit + partialCategoryLimit <= 0) return emptyList()
 
@@ -25,6 +27,12 @@ internal fun buildAppLibraryIconPrefetchRequests(
         .asSequence()
         .mapNotNull(appsByCategory::get)
         .filter(List<AppInfo>::isNotEmpty)
+        .map { appsInCategory ->
+            prioritizeAppsForPreview(
+                apps = appsInCategory,
+                preferredApps = preferredApps,
+            )
+        }
         .toList()
     return buildList {
         categoryApps.take(categoryLimit.coerceAtLeast(0)).forEach { appsInCategory ->

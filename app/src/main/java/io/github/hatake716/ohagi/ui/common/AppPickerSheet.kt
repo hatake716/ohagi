@@ -59,6 +59,7 @@ import io.github.hatake716.ohagi.ui.theme.Kome
 @Composable
 fun AppPickerSheet(
     apps: List<AppInfo>,
+    preferredApps: List<AppRef> = emptyList(),
     multiSelect: Boolean,
     onConfirm: (List<AppInfo>) -> Unit,
     onDismiss: () -> Unit,
@@ -182,6 +183,7 @@ fun AppPickerSheet(
                 selectedCategory = selectedCategory,
                 onCategorySelected = { selectedCategory = it },
                 onPreviewAppClick = ::select,
+                preferredApps = preferredApps,
                 selectedApps = selectedRefs,
                 modifier = Modifier
                     .fillMaxWidth()

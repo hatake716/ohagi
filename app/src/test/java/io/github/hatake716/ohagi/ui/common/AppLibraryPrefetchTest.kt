@@ -72,6 +72,27 @@ class AppLibraryPrefetchTest {
         assertEquals(AppLibraryPrefetchBudget(4, 0), appLibraryPrefetchBudget(true))
     }
 
+    @Test
+    fun prefetchUsesTheSamePreferredOrderAsCategoryCards() {
+        val social = (0..7).map { app("social-$it", AppCategory.SOCIAL) }
+
+        val requests = buildAppLibraryIconPrefetchRequests(
+            apps = social,
+            previewIconSizePx = 192,
+            miniIconSizePx = 96,
+            categoryLimit = 1,
+            preferredApps = listOf(social[6].ref, social[2].ref),
+        )
+
+        assertEquals(
+            listOf(social[6], social[2], social[0])
+                .map { AppIconRequest(it.ref, 192) } +
+                listOf(social[1], social[3], social[4], social[5])
+                    .map { AppIconRequest(it.ref, 96) },
+            requests,
+        )
+    }
+
     private fun app(id: String, category: AppCategory) = AppInfo(
         ref = AppRef(
             packageName = "example.$id",

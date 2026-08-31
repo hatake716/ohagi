@@ -72,6 +72,7 @@ fun CategorizedAppBrowser(
     onCategorySelected: (AppCategory?) -> Unit,
     onPreviewAppClick: (AppInfo) -> Unit,
     modifier: Modifier = Modifier,
+    preferredApps: List<AppRef> = emptyList(),
     selectedApps: Set<AppRef> = emptySet(),
     appCell: @Composable (AppInfo) -> Unit,
 ) {
@@ -106,12 +107,17 @@ fun CategorizedAppBrowser(
         )
 
         else -> {
-            val groups = remember(apps) {
+            val groups = remember(apps, preferredApps) {
                 val appsByCategory = apps.groupBy { it.category }
                 AppCategory.entries.mapNotNull { category ->
                     appsByCategory[category]
                         ?.takeIf { it.isNotEmpty() }
-                        ?.let { category to it }
+                        ?.let { groupedApps ->
+                            category to prioritizeAppsForPreview(
+                                apps = groupedApps,
+                                preferredApps = preferredApps,
+                            )
+                        }
                 }
             }
             // カードごとのBoxWithConstraintsは、Pagerへ入る最初のフレームで

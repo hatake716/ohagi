@@ -190,11 +190,16 @@ fun rememberRequestedAppIconBitmaps(
     }
     return key(requests, iconVersion) {
         produceState<List<ImageBitmap?>>(initialValue = cached) {
-            value = requests.mapIndexed { index, request ->
-                cached[index] ?: graph.appRepository.loadIcon(
-                    request.ref,
-                    request.requestedSizePx,
-                )
+            val loaded = cached.toMutableList()
+            requests.forEachIndexed { index, request ->
+                if (loaded[index] == null) {
+                    loaded[index] = graph.appRepository.loadIcon(
+                        request.ref,
+                        request.requestedSizePx,
+                    )
+                    // 7件すべてを待たず、取得できたアイコンから順にカードへ反映する。
+                    value = loaded.toList()
+                }
             }
         }
     }

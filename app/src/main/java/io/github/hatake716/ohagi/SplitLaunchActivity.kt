@@ -95,6 +95,7 @@ class SplitLaunchActivity : ComponentActivity() {
         window.decorView.post {
             try {
                 startActivity(LaunchUtils.adjacentLaunchIntent(second))
+                (application as OhagiApp).graph.usageRepository.recordLaunch(second)
                 cleanupHandler.postDelayed(finishCoordinator, MAX_COORDINATOR_LIFETIME_MS)
             } catch (_: RuntimeException) {
                 finish()

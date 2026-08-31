@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
 import io.github.hatake716.ohagi.data.AppRepository
 import io.github.hatake716.ohagi.data.LayoutRepository
+import io.github.hatake716.ohagi.data.UsageRepository
 import io.github.hatake716.ohagi.widget.WidgetHostController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ class Graph(context: Context) {
 
     val appRepository = AppRepository(appContext)
     val layoutRepository = LayoutRepository(appContext)
+    val usageRepository = UsageRepository(appContext)
     val widgetHost = WidgetHostController(appContext)
 
     fun start() {
