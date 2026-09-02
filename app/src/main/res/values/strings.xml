@@ -15,7 +15,6 @@
     <string name="action_add_count">追加（%1$d）</string>
     <string name="action_clear_search">検索内容を消去</string>
     <string name="action_rename">名前を変更</string>
-    <string name="action_more">その他の操作</string>
 
     <!-- ホーム/ドロワー共通 -->
     <string name="menu_set_default_home">デフォルトのホームアプリに設定</string>
@@ -84,4 +83,18 @@
     <string name="split_notification_title">ohagi</string>
     <string name="split_notification_text">%1$sと分割する2つ目のアプリを選択できます</string>
     <string name="split_notification_action">ohagi</string>
+
+    <!-- ホームへのファイル/フォルダピン(macOS デスクトップ風) -->
+    <string name="menu_pin_app">アプリを置く</string>
+    <string name="menu_pin_file">ファイルを置く</string>
+    <string name="menu_pin_folder">フォルダを置く</string>
+    <string name="action_open">開く</string>
+    <string name="action_open_with">アプリを選んで開く</string>
+    <string name="action_unpin">ピンを外す</string>
+    <string name="pin_unknown_file">ファイル</string>
+    <string name="pin_unknown_folder">フォルダ</string>
+    <string name="toast_pin_failed">この場所は配置できませんでした</string>
+    <string name="toast_pin_open_failed">開けるアプリが見つかりません</string>
+    <string name="toast_pin_missing">ファイルが見つかりません。長押しメニューからピンを外せます</string>
+    <string name="toast_pin_limit_near">ピン留めできる数が上限に近づいています</string>
 </resources>

@@ -22,6 +22,9 @@ internal fun LayoutState.moveAppToHome(
             editor.home[targetIndex] = HomeItem.HomeApp(sourceApp)
         }
 
+        // ファイル/フォルダのピンの上にはアプリを置かない(no-op)。
+        is HomeItem.HomeFile, is HomeItem.HomeDirectory -> return this
+
         is HomeItem.HomeFolder -> {
             if (!editor.removeApp(source)) return this
             editor.home[targetIndex] = target.copy(
@@ -120,6 +123,9 @@ internal fun LayoutState.stackAppOnHome(
     val editor = LayoutEditor(this)
     val sourceApp = editor.appAt(source) ?: return this
     when (target) {
+        // ファイル/フォルダのピンとはフォルダを作らない(no-op)。
+        is HomeItem.HomeFile, is HomeItem.HomeDirectory -> return this
+
         is HomeItem.HomeFolder -> {
             if (!editor.removeApp(source)) return this
             editor.home[targetIndex] = target.copy(
@@ -182,6 +188,8 @@ internal fun LayoutState.moveHomeItemToDock(
     if (homeIndex !in home.indices) return this
     if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return this
     val source = home[homeIndex] ?: return this
+    // ファイル/フォルダのピンはホーム専用。Dock へは移動させない(no-op)。
+    if (source is HomeItem.HomeFile || source is HomeItem.HomeDirectory) return this
     val target = dock[dockSlot]
     return copy(
         home = home.toMutableList().apply {
@@ -202,6 +210,8 @@ internal fun LayoutState.moveDockItemToHome(
     if (dockSlot !in 0 until LayoutState.DOCK_SLOT_COUNT) return this
     val source = dock[dockSlot] ?: return this
     val target = home[homeIndex]
+    // 入替先がファイル/フォルダのピンなら no-op(ピンが Dock 側へ流れるのを防ぐ)。
+    if (target is HomeItem.HomeFile || target is HomeItem.HomeDirectory) return this
     return copy(
         home = home.toMutableList().apply {
             this[homeIndex] = source.toHomeItem()
@@ -228,6 +238,8 @@ internal fun LayoutState.createOrAddFolder(
                     folderOrApp(name, listOf(current.app) + additions)
                 is HomeItem.HomeFolder ->
                     current.copy(apps = (current.apps + additions).distinct())
+                // ファイル/フォルダのピンはアプリフォルダにしない(no-op)。
+                is HomeItem.HomeFile, is HomeItem.HomeDirectory -> return this
             }
             copy(home = home.toMutableList().apply { this[location.index] = updated })
         }
@@ -439,9 +451,11 @@ private class LayoutEditor(private val sourceState: LayoutState) {
     fun build(): LayoutState = sourceState.copy(home = home, dock = dock)
 }
 
-private fun HomeItem.toDockItem(): DockItem = when (this) {
+/** ファイル/フォルダのピンは Dock へ変換できない(null=置けない)。 */
+private fun HomeItem.toDockItem(): DockItem? = when (this) {
     is HomeItem.HomeApp -> DockItem.DockApp(app)
     is HomeItem.HomeFolder -> DockItem.DockFolder(name, apps)
+    is HomeItem.HomeFile, is HomeItem.HomeDirectory -> null
 }
 
 private fun DockItem.toHomeItem(): HomeItem = when (this) {

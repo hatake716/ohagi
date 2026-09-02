@@ -186,14 +186,19 @@ class LayoutRepository(context: Context) {
         }
     }
 
-    /** ホームグリッドの 2 セルの中身を入れ替える(空きセル=null との入替も可)。 */
+    /**
+     * ホームグリッドの 2 セルの中身を入れ替える(空きセル=null との入替も可)。
+     * ドラッグ中にUI側だけへ足した新規ページのセルが相手でも、上限内なら
+     * ensureCellPage で実ページを生成してから入れ替える。
+     */
     fun swapHomeItems(a: Int, b: Int) {
         update { state ->
-            val n = state.home.size
+            val expanded = state.ensureCellPage(a).ensureCellPage(b)
+            val n = expanded.home.size
             if (a == b || a !in 0 until n || b !in 0 until n) return@update state
-            val home = state.home.toMutableList()
+            val home = expanded.home.toMutableList()
             val tmp = home[a]; home[a] = home[b]; home[b] = tmp
-            state.copy(home = home)
+            expanded.copy(home = home)
         }
     }
 
@@ -209,12 +214,12 @@ class LayoutRepository(context: Context) {
 
     /** Dockのアプリまたはフォルダをホームへ移動する（対称）。 */
     fun moveDockToHome(dockSlot: Int, homeIndex: Int) {
-        update { state -> state.moveDockItemToHome(dockSlot, homeIndex) }
+        update { state -> state.ensureCellPage(homeIndex).moveDockItemToHome(dockSlot, homeIndex) }
     }
 
     /** フォルダ内を含むアプリ1件をホームセルへ原子的に移動／入れ替えする。 */
     fun moveAppToHome(index: Int, source: AppMoveSource) {
-        update { state -> state.moveAppToHome(index, source) }
+        update { state -> state.ensureCellPage(index).moveAppToHome(index, source) }
     }
 
     /** フォルダ内を含むアプリ1件をDockスロットへ原子的に移動／入れ替えする。 */
@@ -224,7 +229,7 @@ class LayoutRepository(context: Context) {
 
     /** アプリをホーム上のアプリへ重ねてフォルダ化するか、既存フォルダへ追加する。 */
     fun stackAppOnHome(index: Int, source: AppMoveSource, folderName: String) {
-        update { state -> state.stackAppOnHome(index, source, folderName) }
+        update { state -> state.ensureCellPage(index).stackAppOnHome(index, source, folderName) }
     }
 
     /** アプリをDock上のアプリへ重ねてフォルダ化するか、既存フォルダへ追加する。 */
@@ -234,10 +239,42 @@ class LayoutRepository(context: Context) {
 
     /** ドロワーからホームの指定セルへアプリを設置する(空/アプリセルは上書き、フォルダは不可)。 */
     fun placeAppOnHome(index: Int, app: AppRef) {
-        update { state ->
-            if (index !in state.home.indices) return@update state
+        update { untouched ->
+            val state = untouched.ensureCellPage(index)
+            if (index !in state.home.indices) return@update untouched
             if (state.home[index] is HomeItem.HomeFolder) return@update state
             state.copy(home = state.home.toMutableList().apply { this[index] = HomeItem.HomeApp(app) })
+        }
+    }
+
+    /**
+     * SAF で選んだファイル/フォルダのピンをホームの空きセルへ置く。
+     * 追加導線が空きセル長押しのみのため、非空セルへは置かない(no-op)。
+     */
+    fun placePinOnHome(index: Int, item: HomeItem) {
+        require(item is HomeItem.HomeFile || item is HomeItem.HomeDirectory) {
+            "placePinOnHome はファイル/フォルダのピン専用"
+        }
+        update { untouched ->
+            val state = untouched.ensureCellPage(index)
+            if (index !in state.home.indices) return@update untouched
+            if (state.home[index] != null) return@update state
+            state.copy(home = state.home.toMutableList().apply { this[index] = item })
+        }
+    }
+
+    /** ファイル/フォルダピンの ohagi 上の表示名を変更する(実体はリネームしない)。 */
+    fun renameHomePin(index: Int, name: String) {
+        update { state ->
+            if (index !in state.home.indices) return@update state
+            val renamed = when (val current = state.home[index]) {
+                is HomeItem.HomeFile ->
+                    current.copy(displayName = name.ifBlank { current.displayName })
+                is HomeItem.HomeDirectory ->
+                    current.copy(displayName = name.ifBlank { current.displayName })
+                else -> return@update state
+            }
+            state.copy(home = state.home.toMutableList().apply { this[index] = renamed })
         }
     }
 
@@ -382,6 +419,9 @@ class LayoutRepository(context: Context) {
                         val remaining = item.apps.filter { it.packageName in installedPackages }
                         if (remaining.isEmpty()) null else item.copy(apps = remaining)
                     }
+                    // ファイル/フォルダのピンはアプリ掃除の対象外。
+                    // (実体消失の自動掃除もしない: SD 一時取り外し等との区別がつかないため)
+                    is HomeItem.HomeFile, is HomeItem.HomeDirectory -> item
                 }
             }
             state.copy(home = home, dock = dock)

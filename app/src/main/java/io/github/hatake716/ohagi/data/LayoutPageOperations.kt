@@ -1,11 +1,21 @@
 package io.github.hatake716.ohagi.data
 
 /** 指定ページが存在するところまで、上限内で空ページを補う。 */
-private fun LayoutState.ensureHomePage(page: Int): LayoutState {
+internal fun LayoutState.ensureHomePage(page: Int): LayoutState {
     if (page !in 0 until LayoutState.MAX_HOME_PAGE_COUNT) return this
     val requiredCells = (page + 1) * LayoutState.HOME_CELL_COUNT
     if (home.size >= requiredCells) return this
     return copy(home = home + List(requiredCells - home.size) { null })
+}
+
+/**
+ * セル index が属するページが存在するところまで、上限内で空ページを補う。
+ * ドラッグ中にUI側だけへ足した新規ページの任意セルへドロップされた場合、
+ * 書き込み時にここで実ページを生成する(空のままなら正規化が回収する)。
+ */
+internal fun LayoutState.ensureCellPage(index: Int): LayoutState {
+    if (index < 0) return this
+    return ensureHomePage(index / LayoutState.HOME_CELL_COUNT)
 }
 
 private fun LayoutState.dropCellOnPage(page: Int): Int? {

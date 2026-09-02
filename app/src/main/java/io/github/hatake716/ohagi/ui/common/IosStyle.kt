@@ -149,61 +149,6 @@ fun rememberIosDragVisualState(
     )
 }
 
-/** iOS の ellipsis.circle に近い、独自描画の横三点メニューボタン。 */
-@Composable
-fun IosMoreButton(
-    contentDescription: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    size: Dp = 22.dp,
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
-        pressed = pressed,
-        pressedScale = 0.88f,
-        label = "iosMoreButtonScale",
-    )
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(size)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(CircleShape)
-            .background(Ink.copy(alpha = 0.44f))
-            .border(0.5.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-            )
-            .semantics {
-                this.contentDescription = contentDescription
-                role = Role.Button
-            },
-    ) {
-        Canvas(Modifier.size(size * 0.48f)) {
-            val dotRadius = this.size.minDimension * 0.09f
-            val centerY = this.size.height / 2f
-            val gap = this.size.width * 0.30f
-            for (offset in -1..1) {
-                drawCircle(
-                    color = Kome.copy(alpha = 0.96f),
-                    radius = dotRadius,
-                    center = androidx.compose.ui.geometry.Offset(
-                        x = this.size.width / 2f + offset * gap,
-                        y = centerY,
-                    ),
-                )
-            }
-        }
-    }
-}
-
 /** ナビゲーションバー上で使う、半透明の丸いシンボルボタン。 */
 @Composable
 fun IosGlassIconButton(

@@ -4,7 +4,9 @@ import android.content.ClipData
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -19,6 +21,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
@@ -195,6 +199,12 @@ fun rememberOhagiDropTarget(
 /**
  * 公式dragAndDropSourceの検出ブロックで、短いタップと長押しD&Dを一元処理する。
  * 別のclickableとDOWNを取り合わないため、LazyGrid内でもドラッグ開始が安定する。
+ *
+ * [onLongPressMenu] を渡すと iOS 本来の長押し体験になる:
+ * 長押し成立でリフト([onDragStarted])し、そのまま動かせばドラッグ、
+ * 動かさず離せばメニュー([onLongPressMenu])。画面上のメニューボタンを置かずに
+ * ドラッグとコンテキストメニューを1つの長押しに同居させるための分岐で、
+ * null の場合は従来どおり長押し成立で即ドラッグセッションを開始する。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Suppress("DEPRECATION")
@@ -205,7 +215,11 @@ fun Modifier.ohagiDragSource(
     folderIcons: List<ImageBitmap?> = emptyList(),
     onTap: () -> Unit,
     onPressChanged: (Boolean) -> Unit = {},
+    /** 長押し成立(リフト)時。ハプティクスやリフト演出用。メニューに化けても呼ばれる。 */
+    onLift: () -> Unit = {},
+    /** 実際にドラッグセッションを開始する(startTransfer)直前。親への通知はこちらで。 */
     onDragStarted: () -> Unit = {},
+    onLongPressMenu: (() -> Unit)? = null,
 ): Modifier {
     // animateItemの安定keyで同じComposableが別slotへ移動しても、D&D nodeが
     // 移動前indexのlambdaを保持しないよう、セッション開始時に最新値を読む。
@@ -214,7 +228,9 @@ fun Modifier.ohagiDragSource(
     val currentFolderIcons = rememberUpdatedState(folderIcons)
     val currentTap = rememberUpdatedState(onTap)
     val currentPressChanged = rememberUpdatedState(onPressChanged)
+    val currentLift = rememberUpdatedState(onLift)
     val currentDragStarted = rememberUpdatedState(onDragStarted)
+    val currentLongPressMenu = rememberUpdatedState(onLongPressMenu)
 
     return dragAndDropSource(
         drawDragDecoration = {
@@ -226,22 +242,56 @@ fun Modifier.ohagiDragSource(
             }
         },
         block = {
-            detectTapGestures(
-                onPress = {
-                    currentPressChanged.value(true)
-                    try {
-                        tryAwaitRelease()
-                    } finally {
-                        currentPressChanged.value(false)
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                currentPressChanged.value(true)
+                try {
+                    // 長押し成立を待つ。この間の slop 超えの動きはスクロールへ譲る
+                    // (awaitLongPressOrCancellation が null を返す)。
+                    val longPress = awaitLongPressOrCancellation(down.id)
+                    if (longPress == null) {
+                        // slop 内で指が離れていればタップ。まだ押されたままなら
+                        // スクロール等に奪われたので何もしない。
+                        val last = currentEvent.changes.firstOrNull { it.id == down.id }
+                        if (last == null || !last.pressed) currentTap.value()
+                        return@awaitEachGesture
                     }
-                },
-                onTap = { currentTap.value() },
-                onLongPress = {
-                    val transferData = currentPayload.value.toTransferData()
-                    startTransfer(transferData)
-                    currentDragStarted.value()
-                },
-            )
+
+                    // 長押し成立: リフト開始(ハプティクス等は呼び出し側)。
+                    longPress.consume()
+                    currentLift.value()
+
+                    val menu = currentLongPressMenu.value
+                    if (menu == null) {
+                        // 従来挙動: 即ドラッグセッション開始(以降は OS が追従)。
+                        currentDragStarted.value()
+                        startTransfer(currentPayload.value.toTransferData())
+                        return@awaitEachGesture
+                    }
+
+                    // iOS 風分岐: slop を超えて動いたらドラッグ、動かさず離したらメニュー。
+                    val slop = viewConfiguration.touchSlop
+                    var moved = Offset.Zero
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (change.changedToUp()) {
+                            change.consume()
+                            menu()
+                            break
+                        }
+                        moved += change.positionChange()
+                        change.consume()
+                        if (moved.getDistance() > slop) {
+                            currentDragStarted.value()
+                            startTransfer(currentPayload.value.toTransferData())
+                            break
+                        }
+                    }
+                } finally {
+                    currentPressChanged.value(false)
+                }
+            }
         },
     ).semantics {
         onClick {

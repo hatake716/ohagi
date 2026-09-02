@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,6 +70,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.hatake716.ohagi.R
@@ -83,6 +86,8 @@ import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.folderLocationOrNull
+import io.github.hatake716.ohagi.ui.common.animatedUprightRotation
+import io.github.hatake716.ohagi.ui.common.uprightWithDevice
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
 import io.github.hatake716.ohagi.ui.dragdrop.rememberOhagiDropTarget
@@ -123,6 +128,9 @@ fun IosFolderOverlay(
 ) {
     var editMode by remember { mutableStateOf(false) }
     var panelBounds by remember { mutableStateOf<Rect?>(null) }
+    // ヘッダ移動の計算にはレイヤー変換(横画面時のPortraitStage回転)の影響を受けない
+    // レイアウト寸法を使う。boundsInRoot は変換後のAABBなので横画面では使えない。
+    var panelLayoutSize by remember { mutableStateOf(IntSize.Zero) }
     var dragOutRequested by remember { mutableStateOf(false) }
     var sessionPayload by remember { mutableStateOf<DragPayload?>(null) }
     var closing by remember(location) { mutableStateOf(false) }
@@ -231,17 +239,27 @@ fun IosFolderOverlay(
             .padding(horizontal = 18.dp, vertical = 30.dp),
     ) {
         val panelShape = RoundedCornerShape(38.dp)
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .widthIn(max = 390.dp)
                 .fillMaxWidth()
                 .heightIn(min = 430.dp, max = 520.dp)
-                .onGloballyPositioned { panelBounds = it.boundsInRoot() },
+                .onGloballyPositioned {
+                    panelBounds = it.boundsInRoot()
+                    panelLayoutSize = it.size
+                },
         ) {
+            // 横画面時はパネル背景だけを物理の上下(=このレイアウト座標の左右)へ広げ、
+            // 物理最下段のアイコン名称が背景の縁で切れないようにする。
+            // コンテンツ(グリッド等)の幅は同量の水平paddingで据え置く。
+            val panelExtra = FOLDER_PANEL_UPRIGHT_EXTRA *
+                (kotlin.math.abs(animatedUprightRotation()) / 90f)
+            val basePanelWidth = maxWidth
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .fillMaxSize()
+                    .requiredWidth(basePanelWidth + panelExtra * 2)
                     .graphicsLayer {
                         val progress = reveal.value.coerceIn(0f, 1f)
                         val finalBounds = panelBounds
@@ -288,12 +306,36 @@ fun IosFolderOverlay(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) {}
-                .padding(top = 10.dp, bottom = 14.dp),
+                .padding(top = 10.dp, bottom = 14.dp)
+                .padding(horizontal = panelExtra),
             ) {
+                // 端末を横へ倒したときは、タイトル/編集/追加のヘッダ行をパネルの
+                // 「ユーザーから見て上」= 左右どちらかの辺へ回転しながら移す。
+                // レイアウト位置は変えず(パネル寸法もグリッドも不変)、描画変換だけで
+                // 辺の内側中央へ移動する。ヒットテストは変換に追従するため操作も可能。
+                val uprightRotation = animatedUprightRotation()
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .graphicsLayer {
+                            rotationZ = uprightRotation
+                            val panel = panelLayoutSize
+                            if (panel != IntSize.Zero && uprightRotation != 0f) {
+                                val margin = 4.dp.toPx()
+                                val headerTop = 10.dp.toPx()
+                                val edgeShift =
+                                    (panel.width / 2f - size.height / 2f - margin)
+                                        .coerceAtLeast(0f)
+                                val downShift =
+                                    (panel.height / 2f - headerTop - size.height / 2f)
+                                        .coerceAtLeast(0f)
+                                // +90(ユーザーの上=画面右)なら右辺へ、-90なら左辺へ。
+                                val fraction = uprightRotation / 90f
+                                translationX = fraction * edgeShift
+                                translationY = kotlin.math.abs(fraction) * downShift
+                            }
+                        }
                         .padding(horizontal = 12.dp),
                 ) {
                 TextButton(onClick = { editMode = !editMode }) {
@@ -350,7 +392,13 @@ fun IosFolderOverlay(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(342.dp),
+                    .height(342.dp)
+                    .graphicsLayer {
+                        // 横画面時はヘッダ(物理では上=パネルの側辺)と3列目のアイコンが
+                        // 重ならないよう、グリッド全体を物理の下方向へ少しずらす。
+                        translationX =
+                            -(uprightRotation / 90f) * FOLDER_GRID_UPRIGHT_SHIFT.toPx()
+                    },
             ) { page ->
                 Box(
                     modifier = Modifier
@@ -583,7 +631,10 @@ private fun FolderAppCell(
                     onDragStarted(payload)
                 },
             )
-            .padding(horizontal = 4.dp, vertical = 6.dp),
+            .padding(horizontal = 4.dp, vertical = 6.dp)
+            // 端末を横へ倒したときは、フォルダ内のセル位置を保ったまま
+            // アイコンと名称だけ立て直す(ヒット領域はレイアウト位置のまま)。
+            .uprightWithDevice(),
     ) {
         Box(
             modifier = Modifier.onGloballyPositioned { iconBounds = it.boundsInRoot() },
@@ -626,3 +677,9 @@ private fun FolderAppCell(
         )
     }
 }
+
+/** 横画面時にフォルダグリッドをヘッダから離す物理下方向へのシフト量。 */
+private val FOLDER_GRID_UPRIGHT_SHIFT = 28.dp
+
+/** 横画面時にパネル背景を物理の上下(それぞれ)へ広げる量。名称の見切れ防止。 */
+private val FOLDER_PANEL_UPRIGHT_EXTRA = 34.dp

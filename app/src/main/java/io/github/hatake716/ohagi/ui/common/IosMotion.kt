@@ -120,6 +120,8 @@ internal fun folderMotionKeys(
 private fun homeItemMotionIdentity(item: HomeItem?): String? = when (item) {
     is HomeItem.HomeApp -> "app:${item.app.motionIdentity()}"
     is HomeItem.HomeFolder -> "folder:${folderMotionIdentity(item.apps)}"
+    is HomeItem.HomeFile -> "file:${item.uri}"
+    is HomeItem.HomeDirectory -> "dir:${item.treeUri}"
     null -> null
 }
 

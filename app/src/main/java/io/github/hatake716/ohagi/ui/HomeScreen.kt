@@ -12,6 +12,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -23,8 +25,15 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Folder
@@ -38,6 +47,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +90,7 @@ import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_MINI_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.APP_LIBRARY_PREVIEW_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.FREQUENT_APP_ICON_SIZE
 import io.github.hatake716.ohagi.ui.common.IosMotion
+import io.github.hatake716.ohagi.ui.common.LocalDeviceUprightRotation
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
 import io.github.hatake716.ohagi.ui.common.appCategoryTitleRes
@@ -99,6 +110,7 @@ import io.github.hatake716.ohagi.ui.folder.IosFolderOverlay
 import io.github.hatake716.ohagi.ui.home.HomeGrid
 import io.github.hatake716.ohagi.ui.widget.WidgetPage
 import io.github.hatake716.ohagi.ui.widget.WidgetPickerSheet
+import io.github.hatake716.ohagi.util.FilePinUtils
 import io.github.hatake716.ohagi.util.LaunchUtils
 import io.github.hatake716.ohagi.util.AppLaunchRequest
 import kotlinx.coroutines.coroutineScope
@@ -123,11 +135,17 @@ private sealed interface Overlay {
     data class DockSlotChooser(val app: AppRef) : Overlay
     /** ホームグリッドのセル右側「その他」メニュー(index のセル) */
     data class HomeItemMenu(val index: Int) : Overlay
+    /** ホームの空きセル長押しメニュー(ファイル/フォルダのピン追加)。 */
+    data class EmptyCellMenu(val index: Int) : Overlay
+    /** ファイル/フォルダピンの表示名変更ダイアログ。 */
+    data class RenameHomePin(val index: Int) : Overlay
     data class Picker(val target: PickTarget) : Overlay
 }
 
 /** アプリピッカーで選んだアプリの追加先 */
 private sealed interface PickTarget {
+    /** ホームの空きセルへアプリを1つ配置する。 */
+    data class HomeCell(val index: Int) : PickTarget
     data class DockSlot(val slot: Int) : PickTarget
     data class FolderAdd(val location: FolderLocation) : PickTarget
     data class FolderCreate(val location: FolderLocation) : PickTarget
@@ -150,6 +168,34 @@ fun HomeScreen(
 
     var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
     var layout by remember { mutableStateOf(latestLayout) }
+
+    // ---- ファイル/フォルダピン(macOS デスクトップ風)の SAF ピッカー ----
+    // 空きセル長押しメニューから起動し、選択結果をそのセルへピン留めする。
+    var pinTargetIndex by remember { mutableStateOf<Int?>(null) }
+    val pickFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val index = pinTargetIndex
+        pinTargetIndex = null
+        if (uri != null && index != null) {
+            FilePinUtils.describeDocument(context, uri)?.let { pin ->
+                graph.layoutRepository.placePinOnHome(index, pin)
+                FilePinUtils.warnIfNearPermissionLimit(context)
+            }
+        }
+    }
+    val pickFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        val index = pinTargetIndex
+        pinTargetIndex = null
+        if (treeUri != null && index != null) {
+            FilePinUtils.describeTree(context, treeUri)?.let { pin ->
+                graph.layoutRepository.placePinOnHome(index, pin)
+                FilePinUtils.warnIfNearPermissionLimit(context)
+            }
+        }
+    }
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_HOME_PAGER_INDEX,
         pageCount = { layout.homePageCount + STATIC_PAGE_COUNT },
@@ -251,6 +297,15 @@ fun HomeScreen(
     var edgeTransitionInProgress by remember { mutableStateOf(false) }
     var edgeDestinationHomePage by remember { mutableStateOf<Int?>(null) }
     var createdPageDuringDrag by remember { mutableStateOf(false) }
+    /** このドラッグセッションでいずれかのドロップが受理されたか(仮ページ破棄の判定用)。 */
+    var pageDropAccepted by remember { mutableStateOf(false) }
+    /**
+     * ページ内セル番号(0..23)→ルート座標の矩形。全ホームページが同じグリッド位置を
+     * 共有するため1ページ分で足りる。ページ跨ぎドロップは公式D&Dのターゲットに
+     * 参加できない(ドラッグ開始時に存在したターゲットしか候補にならない)ので、
+     * ルートのfallbackがこの矩形からドロップ先セルを解決する。
+     */
+    val homeCellBounds = remember { mutableStateMapOf<Int, Rect>() }
     var edgeDropCommitted by remember { mutableStateOf(false) }
     var edgeDropBaselineHome by remember { mutableStateOf<List<HomeItem?>?>(null) }
     var pageLimitToastShown by remember { mutableStateOf(false) }
@@ -410,6 +465,8 @@ fun HomeScreen(
         return when (target) {
             is HomeItem.HomeApp -> target.app != sourceApp
             is HomeItem.HomeFolder -> true
+            // ファイル/フォルダのピンとはアプリフォルダを作らない。
+            is HomeItem.HomeFile, is HomeItem.HomeDirectory -> false
         }
     }
 
@@ -599,11 +656,12 @@ fun HomeScreen(
         position: Offset,
         stackIntent: Boolean,
     ): Boolean {
-        val destinationPage = edgeDestinationHomePage
-        return if (createdPageDuringDrag && destinationPage != null) {
-            dropOnDestinationHomePage(destinationPage, payload)
-        } else if (isTrashDrop(payload, position)) dropOnTrash(payload)
+        // ドラッグ中に生成した新規ページでも、落としたセルへそのまま置く(iOS同様の任意配置)。
+        // 新規ページのセルへの書き込みは、リポジトリ側の ensureCellPage が実ページを生成する。
+        val accepted = if (isTrashDrop(payload, position)) dropOnTrash(payload)
         else dropOnHome(index, payload, stackIntent)
+        if (accepted) pageDropAccepted = true
+        return accepted
     }
 
     fun routeDropOnDock(
@@ -612,11 +670,10 @@ fun HomeScreen(
         position: Offset,
         stackIntent: Boolean,
     ): Boolean {
-        val destinationPage = edgeDestinationHomePage
-        return if (createdPageDuringDrag && destinationPage != null) {
-            dropOnDestinationHomePage(destinationPage, payload)
-        } else if (isTrashDrop(payload, position)) dropOnTrash(payload)
+        val accepted = if (isTrashDrop(payload, position)) dropOnTrash(payload)
         else dropOnDock(slot, payload, stackIntent)
+        if (accepted) pageDropAccepted = true
+        return accepted
     }
 
     fun updateDragPosition(position: Offset) {
@@ -627,10 +684,6 @@ fun HomeScreen(
         val currentPage = pagerState.currentPage
         if (currentPage !in 1..layout.homePageCount) return
         val atRightEdge = position.x >= bounds.right - edgeZonePx
-        if (createdPageDuringDrag && !atRightEdge) {
-            createdPageDuringDrag = false
-            edgeDestinationHomePage = null
-        }
 
         when {
             atRightEdge -> {
@@ -649,10 +702,21 @@ fun HomeScreen(
                     }
 
                     layout.homePageCount < io.github.hatake716.ohagi.data.LayoutState.MAX_HOME_PAGE_COUNT -> {
+                        // iOS同様、その場で新しい空ページへスライドし任意のセルへ置けるようにする。
+                        // DataStore は空ページを正規化で保持しないため、ページは UI ローカルの
+                        // layout にだけ足す。実ページはドロップの書き込み(ensureCellPage)が生成し、
+                        // どこにも置かれなければ endDragSession がローカルの仮ページを破棄する。
                         createdPageDuringDrag = true
                         edgeDestinationHomePage = layout.homePageCount
-                        // OSのDROPまでは現在のセルtargetを維持し、DROP内で生成と移動を原子的に行う。
-                        edgeTransitionInProgress = false
+                        layout = layout.copy(
+                            home = layout.home +
+                                List(io.github.hatake716.ohagi.data.LayoutState.HOME_CELL_COUNT) { null },
+                        )
+                        scope.launch {
+                            pagerState.scrollToPage(currentPage + 1)
+                            delay(HOME_PAGE_EDGE_COOLDOWN_MS)
+                            edgeTransitionInProgress = false
+                        }
                     }
 
                     else -> {
@@ -686,11 +750,33 @@ fun HomeScreen(
     }
 
     /**
-     * ページ追加／切替で元のセルtargetが破棄された場合のフォールバック。
-     * 目的ページの先頭空きセルへ移し、ページ生成も同じDataStore更新内で保証する。
+     * ページ跨ぎなどで元のセルtargetがドロップを受けられない場合のフォールバック。
+     * 公式D&Dはドラッグ開始時に存在したターゲットしか候補にしないため、ページ切替後の
+     * セルには直接落ちない。そこで表示中ページのセル矩形からドロップ先を解決し、
+     * iOS同様「落とした位置のセル」へ置く。セルを特定できない時のみ従来どおり
+     * 目的ページの先頭空きセルへ移す。
      */
     fun dropOnPagerFallback(payload: DragPayload, position: Offset): Boolean {
         if (isTrashDrop(payload, position)) return dropOnTrash(payload)
+
+        // 表示中のホームページ上で、ドロップ位置直下のセルを探す。
+        if (pagerState.currentPage in 1..layout.homePageCount) {
+            val visiblePage = pagerState.currentPage - 1
+            val cellEntry = homeCellBounds.entries.firstOrNull { it.value.contains(position) }
+            if (cellEntry != null) {
+                val index = visiblePage *
+                    io.github.hatake716.ohagi.data.LayoutState.HOME_CELL_COUNT + cellEntry.key
+                // セル中央付近ならiOSのフォルダ化/追加と同じ重ね操作として扱う。
+                val stackIntent = (position - cellEntry.value.center).getDistance() <=
+                    with(density) { HOME_FALLBACK_STACK_RADIUS.toPx() }
+                val accepted = dropOnHome(index, payload, stackIntent)
+                if (accepted) {
+                    pageDropAccepted = true
+                    return true
+                }
+            }
+        }
+
         val visibleHomePage = (pagerState.currentPage - 1)
             .coerceIn(0, layout.homePageCount - 1)
         val destinationPage = edgeDestinationHomePage ?: visibleHomePage
@@ -698,13 +784,21 @@ fun HomeScreen(
             return false
         }
 
-        return dropOnDestinationHomePage(destinationPage, payload)
+        val accepted = dropOnDestinationHomePage(destinationPage, payload)
+        if (accepted) pageDropAccepted = true
+        return accepted
     }
 
     fun endDragSession() {
         trashHovered = false
         activeDrag = null
+        if (createdPageDuringDrag && !pageDropAccepted) {
+            // どこにも置かれずドラッグが終わった: UI ローカルにだけ足した仮ページを破棄する。
+            // (置かれた場合は DataStore 反映後の同期が同じ形のページへ置き換えるので触らない)
+            layout = latestLayout
+        }
         createdPageDuringDrag = false
+        pageDropAccepted = false
     }
 
     // HomeGridの各セルがPager再構成で入れ替わっても、この親targetはセッション中存続する。
@@ -907,14 +1001,22 @@ fun HomeScreen(
                                             location = FolderLocation.Home(index),
                                             sourceBounds = bounds,
                                         )
-                                    else -> Unit
+                                    is HomeItem.HomeFile ->
+                                        FilePinUtils.openFile(context, item)
+                                    is HomeItem.HomeDirectory ->
+                                        FilePinUtils.openDirectory(context, item)
+                                    null -> Unit
                                 }
                             },
                             onCellMenu = { index ->
-                                if (layout.home.getOrNull(index) != null) {
-                                    overlay = Overlay.HomeItemMenu(index)
+                                overlay = if (layout.home.getOrNull(index) != null) {
+                                    Overlay.HomeItemMenu(index)
+                                } else {
+                                    // 空きセル長押し: ファイル/フォルダのピン追加メニュー
+                                    Overlay.EmptyCellMenu(index)
                                 }
                             },
+                            onCellBounds = { cell, rect -> homeCellBounds[cell] = rect },
                             onDrop = ::routeDropOnHome,
                             canStack = ::canStackOnHome,
                             onDragMoved = ::updateDragPosition,
@@ -927,7 +1029,8 @@ fun HomeScreen(
                         )
                     }
 
-                    page == appLibraryPage -> AppDrawer(
+                    page == appLibraryPage -> RotateAppLibraryToDevice {
+                        AppDrawer(
                         apps = apps,
                         frequentApps = rankedLaunches,
                         preferredApps = preferredApps,
@@ -957,7 +1060,8 @@ fun HomeScreen(
                                 )
                             }
                         },
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -999,7 +1103,9 @@ fun HomeScreen(
                                 location = FolderLocation.Dock(slot),
                                 sourceBounds = bounds,
                             )
-                        null -> Unit
+                        // 空きスロット(+表示)のタップは割り当てメニュー。
+                        // メニューボタン(⋯)撤去後の、空きスロットへの唯一の導線。
+                        null -> overlay = Overlay.SlotMenu(slot)
                     }
                 },
                 onSlotMenu = { slot -> overlay = Overlay.SlotMenu(slot) },
@@ -1096,6 +1202,113 @@ fun HomeScreen(
                         onDismiss = { if (overlay == current) overlay = Overlay.None },
                     )
                 }
+
+                is HomeItem.HomeFile -> {
+                    MenuSheet(
+                        entries = listOf(
+                            MenuEntry(
+                                stringResource(R.string.action_open),
+                                Icons.AutoMirrored.Rounded.OpenInNew,
+                            ) {
+                                FilePinUtils.openFile(context, item)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_open_with),
+                                Icons.Rounded.Apps,
+                            ) {
+                                FilePinUtils.openFileWithChooser(context, item)
+                            },
+                            MenuEntry(stringResource(R.string.action_rename), Icons.Rounded.Edit) {
+                                overlay = Overlay.RenameHomePin(current.index)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_unpin),
+                                Icons.Rounded.Close,
+                                destructive = true,
+                            ) {
+                                // 実体は削除しない。解除前レイアウトで許可の解放要否を判定する。
+                                FilePinUtils.releasePinPermissionIfUnused(context, layout, item.uri)
+                                repo.setHomeItem(current.index, null)
+                            },
+                        ),
+                        onDismiss = { if (overlay == current) overlay = Overlay.None },
+                    )
+                }
+
+                is HomeItem.HomeDirectory -> {
+                    MenuSheet(
+                        entries = listOf(
+                            MenuEntry(
+                                stringResource(R.string.action_open),
+                                Icons.AutoMirrored.Rounded.OpenInNew,
+                            ) {
+                                FilePinUtils.openDirectory(context, item)
+                            },
+                            MenuEntry(stringResource(R.string.action_rename), Icons.Rounded.Edit) {
+                                overlay = Overlay.RenameHomePin(current.index)
+                            },
+                            MenuEntry(
+                                stringResource(R.string.action_unpin),
+                                Icons.Rounded.Close,
+                                destructive = true,
+                            ) {
+                                FilePinUtils.releasePinPermissionIfUnused(
+                                    context, layout, item.treeUri,
+                                )
+                                repo.setHomeItem(current.index, null)
+                            },
+                        ),
+                        onDismiss = { if (overlay == current) overlay = Overlay.None },
+                    )
+                }
+            }
+        }
+
+        is Overlay.EmptyCellMenu -> {
+            MenuSheet(
+                entries = listOf(
+                    MenuEntry(
+                        stringResource(R.string.menu_pin_app),
+                        Icons.Rounded.Apps,
+                    ) {
+                        overlay = Overlay.Picker(PickTarget.HomeCell(current.index))
+                    },
+                    MenuEntry(
+                        stringResource(R.string.menu_pin_file),
+                        Icons.AutoMirrored.Rounded.InsertDriveFile,
+                    ) {
+                        pinTargetIndex = current.index
+                        pickFileLauncher.launch(arrayOf("*/*"))
+                    },
+                    MenuEntry(
+                        stringResource(R.string.menu_pin_folder),
+                        Icons.Rounded.CreateNewFolder,
+                    ) {
+                        pinTargetIndex = current.index
+                        pickFolderLauncher.launch(null)
+                    },
+                ),
+                onDismiss = { if (overlay == current) overlay = Overlay.None },
+            )
+        }
+
+        is Overlay.RenameHomePin -> {
+            val pinName = when (val item = layout.home.getOrNull(current.index)) {
+                is HomeItem.HomeFile -> item.displayName
+                is HomeItem.HomeDirectory -> item.displayName
+                else -> null
+            }
+            if (pinName == null) {
+                overlay = Overlay.None
+            } else {
+                RenameFolderDialog(
+                    currentName = pinName,
+                    onConfirm = { name ->
+                        repo.renameHomePin(current.index, name)
+                        overlay = Overlay.None
+                    },
+                    onDismiss = { overlay = Overlay.None },
+                )
             }
         }
 
@@ -1220,6 +1433,7 @@ fun HomeScreen(
                 is FolderLocation.Home -> when (val item = layout.home.getOrNull(location.index)) {
                     is HomeItem.HomeApp -> listOf(item.app)
                     is HomeItem.HomeFolder -> item.apps
+                    is HomeItem.HomeFile, is HomeItem.HomeDirectory -> emptyList()
                     null -> emptyList()
                 }
                 is FolderLocation.Dock -> when (val item = layout.dock.getOrNull(location.slot)) {
@@ -1249,6 +1463,10 @@ fun HomeScreen(
                 onConfirm = { picked ->
                     val first = picked.firstOrNull()
                     when (target) {
+                        is PickTarget.HomeCell -> {
+                            first?.let { repo.placeAppOnHome(target.index, it.ref) }
+                            overlay = Overlay.None
+                        }
                         is PickTarget.DockSlot -> {
                             first?.let { graph.layoutRepository.addAppToDockSlot(target.slot, it.ref) }
                             overlay = Overlay.None
@@ -1364,7 +1582,34 @@ private fun HomePageIndicator(
 
 /** ホームグリッド下部に確保するドック領域の高さ(ドック本体 84dp + 上下マージン)。 */
 private val HOME_GRID_BOTTOM_RESERVED = 104.dp
+/**
+ * App ライブラリを端末の物理向きに合わせて丸ごと回す。
+ * Activity は portrait 固定なので、横向き時は幅と高さを入れ替えた領域へ描画してから
+ * 90 度回転し、分割起動の「2つ目のアプリを選択」と同じ横向きレイアウトとして見せる。
+ * ページ単位の切替のためアニメーションは行わない(向き確定でスナップ)。
+ */
+@Composable
+private fun RotateAppLibraryToDevice(content: @Composable () -> Unit) {
+    val rotation = LocalDeviceUprightRotation.current
+    if (rotation == 0f) {
+        content()
+        return
+    }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .requiredSize(width = maxHeight, height = maxWidth)
+                .align(Alignment.Center)
+                .graphicsLayer { rotationZ = rotation },
+        ) {
+            content()
+        }
+    }
+}
+
 private val HOME_PAGE_EDGE_ZONE = 36.dp
+/** fallbackドロップで「セルへ重ねてフォルダ化/追加」とみなすセル中心からの距離。 */
+private val HOME_FALLBACK_STACK_RADIUS = 34.dp
 private val HOME_PAGE_INDICATOR_BOTTOM = 100.dp
 private const val HOME_PAGE_EDGE_COOLDOWN_MS = 420L
 private const val APP_LIBRARY_PREFETCH_DELAY_MS = 260L

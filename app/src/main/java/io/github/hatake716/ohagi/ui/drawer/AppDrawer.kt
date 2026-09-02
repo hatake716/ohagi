@@ -54,7 +54,6 @@ import io.github.hatake716.ohagi.ui.common.AppIcon
 import io.github.hatake716.ohagi.ui.common.AppIconImage
 import io.github.hatake716.ohagi.ui.common.CategorizedAppBrowser
 import io.github.hatake716.ohagi.ui.common.IosGlassIconButton
-import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosSearchField
 import io.github.hatake716.ohagi.ui.common.MenuEntry
 import io.github.hatake716.ohagi.ui.common.MenuSheet
@@ -174,7 +173,7 @@ fun AppDrawer(
         }
     }
 
-    // セル右上の「その他」ボタンから開くメニュー
+    // セルの長押し(動かさず離す)で開くメニュー
     menuTarget?.let { app ->
         MenuSheet(
             entries = listOf(
@@ -198,7 +197,7 @@ fun AppDrawer(
     }
 }
 
-/** ドロワーの1セル。長押しは公式D&D、メニューは右上ボタンに分離する。 */
+/** ドロワーの1セル。長押しでリフトし、動かすとD&D・動かさず離すとメニュー(iOS風)。 */
 @Composable
 private fun DrawerCell(
     app: AppInfo,
@@ -235,11 +234,12 @@ private fun DrawerCell(
                     pressed = it
                     if (!it) isDragging = false
                 },
-                onDragStarted = {
+                onLift = {
                     isDragging = true
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onDragStarted(payload)
                 },
+                onDragStarted = { onDragStarted(payload) },
+                onLongPressMenu = onMenu,
             )
             .padding(horizontal = 4.dp, vertical = 10.dp)
     ) {
@@ -271,14 +271,6 @@ private fun DrawerCell(
                     .heightIn(min = 30.dp),
             )
         }
-        IosMoreButton(
-            contentDescription = stringResource(R.string.action_more),
-            onClick = onMenu,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(22.dp),
-            size = 22.dp,
-        )
     }
 }
 

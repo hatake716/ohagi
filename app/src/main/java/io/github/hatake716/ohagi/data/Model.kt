@@ -32,6 +32,30 @@ sealed interface HomeItem {
     @Serializable
     @SerialName("folder")
     data class HomeFolder(val name: String, val apps: List<AppRef>) : HomeItem
+
+    /**
+     * SAF で選んだ単一ファイルへのピン(macOS のデスクトップ風)。
+     * uri は ACTION_OPEN_DOCUMENT の document URI。takePersistableUriPermission 済み。
+     * 実体のファイル操作(削除・リネーム)は行わず、displayName は ohagi 上の表示名。
+     */
+    @Serializable
+    @SerialName("file")
+    data class HomeFile(
+        val uri: String,
+        val displayName: String,
+        val mimeType: String? = null,
+    ) : HomeItem
+
+    /**
+     * SAF で選んだ実フォルダへのピン。アプリをまとめる [HomeFolder] とは別物。
+     * treeUri は ACTION_OPEN_DOCUMENT_TREE の tree URI。
+     */
+    @Serializable
+    @SerialName("dir")
+    data class HomeDirectory(
+        val treeUri: String,
+        val displayName: String,
+    ) : HomeItem
 }
 
 /** 左端のウィジェット専用ページへ縦に配置するAndroid App Widget。 */
@@ -104,6 +128,9 @@ data class LayoutState(
     val home: List<HomeItem?> = List(HOME_CELL_COUNT) { null },
     val dock: List<DockItem?> = List(DOCK_SLOT_COUNT) { null },
     val widgets: List<WidgetPlacement> = emptyList(),
+    // v9: ホームへ SAF のファイル/フォルダをピン留めできる HomeFile / HomeDirectory を追加。
+    //     旧バージョンで v9 JSON を読むと sealed の未知 type で corruption 扱いになる
+    //     (ダウングレード非互換)。通常のアップデートでは問題にならない。
     // v8: ウィジェットの幅と高さをユーザー変更可能にし、サイズを永続化。
     // v7: Dock中央の固定ランチャーボタンを、通常の5番目スロットへ置換。
     // v6: homeを24セル単位の複数ページとして扱い、ウィジェット専用ページを追加。
@@ -113,7 +140,7 @@ data class LayoutState(
     val version: Int = CURRENT_VERSION,
 ) {
     companion object {
-        const val CURRENT_VERSION = 8
+        const val CURRENT_VERSION = 9
         const val DOCK_SLOT_COUNT = 5
         const val HOME_COLUMNS = 4
         const val HOME_ROWS = 6
@@ -142,6 +169,7 @@ fun LayoutState.preferredAppRefs(
         when (item) {
             is HomeItem.HomeApp -> add(item.app)
             is HomeItem.HomeFolder -> addAll(item.apps)
+            is HomeItem.HomeFile, is HomeItem.HomeDirectory -> Unit // アプリ参照を持たない
             null -> Unit
         }
     }

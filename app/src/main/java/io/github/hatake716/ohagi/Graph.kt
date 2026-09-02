@@ -50,6 +50,10 @@ class Graph(context: Context) {
                                     add(item.app.packageName)
                                 is io.github.hatake716.ohagi.data.HomeItem.HomeFolder ->
                                     item.apps.forEach { add(it.packageName) }
+                                // ファイル/フォルダのピンはアプリ参照を持たない
+                                is io.github.hatake716.ohagi.data.HomeItem.HomeFile,
+                                is io.github.hatake716.ohagi.data.HomeItem.HomeDirectory,
+                                -> Unit
                                 null -> Unit
                             }
                         }

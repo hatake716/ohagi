@@ -4,10 +4,13 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,12 +52,15 @@ import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
-import io.github.hatake716.ohagi.ui.common.IosMoreButton
+import io.github.hatake716.ohagi.ui.common.DirectoryPinIcon
+import io.github.hatake716.ohagi.ui.common.FilePinIcon
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
 import io.github.hatake716.ohagi.ui.common.IosMotion
 import io.github.hatake716.ohagi.ui.common.homeMotionKeys
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
+import io.github.hatake716.ohagi.ui.common.uprightWithDevice
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
+import io.github.hatake716.ohagi.ui.common.rememberFilePinThumbnail
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
@@ -76,6 +82,8 @@ fun HomeGrid(
     labelOf: (AppRef) -> String,
     onCellTap: (Int, Rect?) -> Unit,
     onCellMenu: (Int) -> Unit,
+    /** ページ内セル番号(0..23)とルート座標の矩形。ページ跨ぎドロップの位置解決用。 */
+    onCellBounds: (Int, Rect) -> Unit = { _, _ -> },
     onDrop: (Int, DragPayload, Offset, Boolean) -> Boolean,
     canStack: (Int, DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
@@ -104,6 +112,7 @@ fun HomeGrid(
                     isDragging = activeDrag == DragPayload.FromHome(globalIndex),
                     onTap = { bounds -> onCellTap(globalIndex, bounds) },
                     onMenu = { onCellMenu(globalIndex) },
+                    onCellBounds = { rect -> onCellBounds(index, rect) },
                     onDrop = { payload, position, stack ->
                         onDrop(globalIndex, payload, position, stack)
                     },
@@ -132,6 +141,7 @@ private fun HomeCell(
     isDragging: Boolean,
     onTap: (Rect?) -> Unit,
     onMenu: () -> Unit,
+    onCellBounds: (Rect) -> Unit = {},
     onDrop: (DragPayload, Offset, Boolean) -> Boolean,
     canStack: (DragPayload) -> Boolean,
     onDragMoved: (Offset) -> Unit,
@@ -153,7 +163,10 @@ private fun HomeCell(
 
     val payload = item?.let { DragPayload.FromHome(index) }
     val dragIconApp = (item as? HomeItem.HomeApp)?.app
-    val dragIcon by rememberAppIconBitmap(dragIconApp, HOME_ICON_SIZE)
+    val appDragIcon by rememberAppIconBitmap(dragIconApp, HOME_ICON_SIZE)
+    // ファイルピンはサムネイルをドラッグ影に使う(表示と同じ Bitmap をキャッシュ共有)。
+    val pinDragThumb by rememberFilePinThumbnail(item as? HomeItem.HomeFile, HOME_ICON_SIZE)
+    val dragIcon = appDragIcon ?: pinDragThumb
     val folderDragIcons by rememberAppIconBitmaps(
         (item as? HomeItem.HomeFolder)?.apps.orEmpty(),
         size = FOLDER_PREVIEW_ICON_REQUEST_SIZE,
@@ -199,7 +212,14 @@ private fun HomeCell(
     )
 
     val sourceModifier = if (payload == null) {
-        Modifier
+        // 空きセル: タップは無反応のまま、長押しでピン追加メニューを開く
+        // (ファイル/フォルダの配置導線。ohagiDragSource はドラッグ対象が無いので付けない)。
+        Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = {},
+            onLongClick = onMenu,
+        )
     } else {
         Modifier.ohagiDragSource(
             payload = payload,
@@ -207,10 +227,9 @@ private fun HomeCell(
             folderIcons = folderDragIcons,
             onTap = { onTap(folderTargetBounds) },
             onPressChanged = { pressed = it },
-            onDragStarted = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onDragSessionStarted(payload)
-            },
+            onLift = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
+            onDragStarted = { onDragSessionStarted(payload) },
+            onLongPressMenu = onMenu,
         )
     }
 
@@ -218,6 +237,7 @@ private fun HomeCell(
         modifier = modifier
             .fillMaxWidth()
             .height(rowHeight)
+            .onGloballyPositioned { onCellBounds(it.boundsInRoot()) }
             .graphicsLayer {
                 scaleX = dragVisual.scale
                 scaleY = dragVisual.scale
@@ -245,15 +265,6 @@ private fun HomeCell(
             )
         }
 
-        if (item != null) {
-            IosMoreButton(
-                contentDescription = stringResource(R.string.action_more),
-                onClick = onMenu,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 3.dp),
-            )
-        }
     }
 }
 
@@ -267,8 +278,9 @@ internal fun HomeCellContent(
     folderHighlighted: Boolean = false,
     onIconBounds: (Rect) -> Unit = {},
 ) {
+    // 端末を横へ倒したときは、セル位置を保ったままアイコンと名称のブロックだけ立て直す。
     when (item) {
-        is HomeItem.HomeApp -> {
+        is HomeItem.HomeApp -> UprightCellBlock {
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
@@ -280,7 +292,7 @@ internal fun HomeCellContent(
             Spacer(Modifier.height(4.dp))
             HomeLabel(text = labelOf(item.app))
         }
-        is HomeItem.HomeFolder -> {
+        is HomeItem.HomeFolder -> UprightCellBlock {
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
@@ -296,6 +308,37 @@ internal fun HomeCellContent(
             }
             Spacer(Modifier.height(4.dp))
             HomeLabel(text = item.name)
+        }
+        is HomeItem.HomeFile -> {
+            val thumbnail by rememberFilePinThumbnail(item, HOME_ICON_SIZE)
+            UprightCellBlock {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(HOME_ICON_TARGET_SIZE)
+                        .onGloballyPositioned { onIconBounds(it.boundsInRoot()) },
+                ) {
+                    FilePinIcon(
+                        mimeType = item.mimeType,
+                        size = HOME_ICON_SIZE,
+                        thumbnail = thumbnail,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                HomeLabel(text = item.displayName)
+            }
+        }
+        is HomeItem.HomeDirectory -> UprightCellBlock {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(HOME_ICON_TARGET_SIZE)
+                    .onGloballyPositioned { onIconBounds(it.boundsInRoot()) },
+            ) {
+                DirectoryPinIcon(size = HOME_ICON_SIZE)
+            }
+            Spacer(Modifier.height(4.dp))
+            HomeLabel(text = item.displayName)
         }
         null -> {
             Box(
@@ -313,6 +356,16 @@ internal fun HomeCellContent(
 private val HOME_ICON_SIZE = 60.dp
 private val HOME_ICON_TARGET_SIZE = 68.dp
 private val FOLDER_PREVIEW_ICON_REQUEST_SIZE = 24.dp
+
+/** アイコン+名称を端末の向きへ立て直す共通ブロック(セル位置は不変)。 */
+@Composable
+private fun UprightCellBlock(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.uprightWithDevice(),
+        content = content,
+    )
+}
 
 /** 壁紙の上でも読める白 + ドロップシャドウのラベル。空文字なら高さだけ確保。 */
 @Composable

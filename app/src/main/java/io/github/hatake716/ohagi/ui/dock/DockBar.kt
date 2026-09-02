@@ -4,6 +4,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -47,11 +49,11 @@ import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.data.DockItem
 import io.github.hatake716.ohagi.data.LayoutState
 import io.github.hatake716.ohagi.ui.common.AppIconImage
-import io.github.hatake716.ohagi.ui.common.IosMoreButton
 import io.github.hatake716.ohagi.ui.common.IosFolderIcon
 import io.github.hatake716.ohagi.ui.common.IosMotion
 import io.github.hatake716.ohagi.ui.common.dockMotionKeys
 import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
+import io.github.hatake716.ohagi.ui.common.uprightWithDevice
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmap
 import io.github.hatake716.ohagi.ui.common.rememberAppIconBitmaps
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
@@ -229,7 +231,12 @@ private fun DockSlot(
     )
 
     val sourceModifier = if (payload == null) {
-        Modifier
+        // 空きスロット(+表示)。メニューボタン(⋯)撤去後の導線として、
+        // タップで割り当てメニューを開けるようにする。
+        Modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+        ) { onTap(null) }
     } else {
         Modifier.ohagiDragSource(
             payload = payload,
@@ -237,10 +244,9 @@ private fun DockSlot(
             folderIcons = folderDragIcons,
             onTap = { onTap(folderTargetBounds) },
             onPressChanged = { pressed = it },
-            onDragStarted = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onDragSessionStarted(payload)
-            },
+            onLift = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
+            onDragStarted = { onDragSessionStarted(payload) },
+            onLongPressMenu = onMenu,
         )
     }
 
@@ -264,32 +270,28 @@ private fun DockSlot(
                 .then(sourceModifier)
                 .semantics { contentDescription = description },
         ) {
-            when (item) {
-                is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = DOCK_ICON_SIZE)
-                is DockItem.DockFolder -> IosFolderIcon(
-                    apps = item.apps,
-                    size = DOCK_ICON_SIZE,
-                    highlighted = folderReady,
-                    preloadedIcons = folderDragIcons,
-                )
-                null -> Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = null,
-                    tint = Kome.copy(alpha = 0.35f),
-                    modifier = Modifier.size(26.dp),
-                )
+            // 端末を横へ倒したときは、スロット位置を保ったままアイコンだけ立て直す。
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.uprightWithDevice(),
+            ) {
+                when (item) {
+                    is DockItem.DockApp -> AppIconImage(icon = dragIcon, size = DOCK_ICON_SIZE)
+                    is DockItem.DockFolder -> IosFolderIcon(
+                        apps = item.apps,
+                        size = DOCK_ICON_SIZE,
+                        highlighted = folderReady,
+                        preloadedIcons = folderDragIcons,
+                    )
+                    null -> Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = null,
+                        tint = Kome.copy(alpha = 0.35f),
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
             }
 
-            IosMoreButton(
-                contentDescription = stringResource(R.string.action_more),
-                onClick = onMenu,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    // 48dpへ拡張されるアクセシブルなタッチ領域を、
-                    // アイコン中央の起動領域と重ねないよう外上方へ寄せる。
-                    .offset(x = 6.dp, y = (-6).dp),
-                size = 20.dp,
-            )
         }
     }
 }

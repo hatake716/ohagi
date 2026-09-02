@@ -15,10 +15,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import io.github.hatake716.ohagi.data.AppRef
 import io.github.hatake716.ohagi.ui.HomeScreen
+import io.github.hatake716.ohagi.ui.common.LocalDeviceUprightRotation
+import io.github.hatake716.ohagi.ui.common.PortraitStage
+import io.github.hatake716.ohagi.ui.common.rememberDeviceUprightRotation
 import io.github.hatake716.ohagi.ui.theme.OhagiTheme
 import io.github.hatake716.ohagi.util.AppLaunchRequest
 import io.github.hatake716.ohagi.util.LaunchBounds
@@ -54,13 +58,22 @@ class MainActivity : ComponentActivity() {
         restorePendingAppLaunch(savedInstanceState)
         setContent {
             OhagiTheme {
-                CompositionLocalProvider(LocalGraph provides graph) {
-                    HomeScreen(
-                        homeEvents = homeEvents,
-                        appReturnEvents = appReturnEvents,
-                        onRequestWidget = ::requestWidget,
-                        onLaunchApp = ::requestAppLaunch,
-                    )
+                // Activity は回転を許可する(マウス等の入力系は OS が横向きとして扱う)。
+                // ただしホームのレイアウトは回さない: PortraitStage が UI 全体を
+                // 縦向き配置のまま横画面へ回して描き、アイコン/名称だけが直立へ追従する。
+                val uprightRotation by rememberDeviceUprightRotation()
+                CompositionLocalProvider(
+                    LocalGraph provides graph,
+                    LocalDeviceUprightRotation provides uprightRotation,
+                ) {
+                    PortraitStage {
+                        HomeScreen(
+                            homeEvents = homeEvents,
+                            appReturnEvents = appReturnEvents,
+                            onRequestWidget = ::requestWidget,
+                            onLaunchApp = ::requestAppLaunch,
+                        )
+                    }
                 }
             }
         }
