@@ -315,6 +315,7 @@ private fun HostedWidgetCard(
                     factory = { context ->
                         controller.createView(context, placement.appWidgetId, info)
                     },
+                    onRelease = controller::releaseView,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

@@ -84,6 +84,9 @@ class AppRepository(private val context: Context) {
     private val iconCache = object : LruCache<String, CachedIcon>(iconCacheMaxKb) {
         override fun sizeOf(key: String, value: CachedIcon): Int = value.sizeKb
     }
+    // Guarded by iconCache. A decode already in flight must not refill a cache
+    // that the OS has just asked us to trim, or restore an invalidated icon.
+    private var iconCacheEpoch = 0L
     private val iconLoadLocks = ConcurrentHashMap<String, Any>()
     @Volatile
     private var labelIndex: Map<AppRef, String> = emptyMap()
@@ -117,6 +120,7 @@ class AppRepository(private val context: Context) {
         override fun onReceive(context: Context, intent: Intent) {
             intent.data?.schemeSpecificPart?.let { pkg ->
                 synchronized(iconCache) {
+                    iconCacheEpoch++
                     iconCache.snapshot().keys
                         .filter { it.startsWith("$pkg/") }
                         .forEach { iconCache.remove(it) }
@@ -242,8 +246,10 @@ class AppRepository(private val context: Context) {
         val loadLock = iconLoadLocks.computeIfAbsent(key) { Any() }
         return try {
             synchronized(loadLock) load@{
-                synchronized(iconCache) { iconCache.get(key)?.image }?.let { return@load it }
-                val versionAtStart = iconVersion
+                val epochAtStart = synchronized(iconCache) {
+                    iconCache.get(key)?.image?.let { return@load it }
+                    iconCacheEpoch
+                }
                 val drawable: Drawable = try {
                     pm.getActivityIcon(ComponentName(ref.packageName, ref.className))
                 } catch (_: Exception) {
@@ -271,13 +277,13 @@ class AppRepository(private val context: Context) {
                         softwareBitmap.asImageBitmap()
                     }
                     // 読み込み中に対象パッケージ群が更新された場合は古い画像を保持しない。
-                    if (iconVersion == versionAtStart) {
-                        synchronized(iconCache) {
+                    synchronized(iconCache) {
+                        if (iconCacheEpoch == epochAtStart) {
                             iconCache.put(
                                 key,
                                 CachedIcon(
                                     image = bitmap,
-                                    sizeKb = renderSizePx * renderSizePx * 4 / 1024,
+                                    sizeKb = (renderSizePx * renderSizePx * 4 + 1023) / 1024,
                                 ),
                             )
                         }
@@ -306,12 +312,16 @@ class AppRepository(private val context: Context) {
             else -> return
         }.coerceAtMost(iconCacheMaxKb)
         synchronized(iconCache) {
+            iconCacheEpoch++
             if (targetKb == 0) iconCache.evictAll() else iconCache.trimToSize(targetKb)
         }
     }
 
     fun clearIconCache() {
-        synchronized(iconCache) { iconCache.evictAll() }
+        synchronized(iconCache) {
+            iconCacheEpoch++
+            iconCache.evictAll()
+        }
     }
 
     /**
@@ -351,18 +361,10 @@ class AppRepository(private val context: Context) {
         return bitmap
     }
 
-    private fun iconRenderSize(requestedSizePx: Int): Int = when {
-        requestedSizePx <= SMALL_ICON_SIZE_PX -> SMALL_ICON_SIZE_PX
-        requestedSizePx <= MEDIUM_ICON_SIZE_PX -> MEDIUM_ICON_SIZE_PX
-        else -> LARGE_ICON_SIZE_PX
-    }
-
     private fun iconCacheKey(ref: AppRef, renderSizePx: Int): String =
         "${ref.packageName}/${ref.className}@$renderSizePx"
 
     private companion object {
-        const val SMALL_ICON_SIZE_PX = 96
-        const val MEDIUM_ICON_SIZE_PX = 144
         const val LARGE_ICON_SIZE_PX = 192
         const val DEFAULT_ICON_CACHE_KB = 6 * 1024
         const val LOW_RAM_ICON_CACHE_KB = 3 * 1024

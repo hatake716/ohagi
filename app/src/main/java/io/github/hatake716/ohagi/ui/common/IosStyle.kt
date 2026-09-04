@@ -22,6 +22,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,12 +51,19 @@ const val IOS_PRESSED_SCALE = 0.94f
 /** 長押しで持ち上げた後、元位置に残す半透明のプレースホルダー。 */
 const val IOS_DRAG_SOURCE_ALPHA = 0.14f
 
-data class IosDragVisualState(
-    val scale: Float,
-    val alpha: Float,
+@Stable
+class IosDragVisualState internal constructor(
+    private val interactionScale: State<Float>,
+    private val landingScale: State<Float>,
+    private val sourceAlpha: State<Float>,
     /** ドロップ成立時に、着地点を一度だけ弾ませて等倍へ収束させる。 */
     val settle: (emphasized: Boolean) -> Unit,
-)
+) {
+    // アニメーション値は呼び出し側のgraphicsLayer内で読む。
+    // Floatへ先に展開すると、毎フレームHome/Dock/Folderのセル全体が再composeされる。
+    val scale: Float get() = interactionScale.value * landingScale.value
+    val alpha: Float get() = sourceAlpha.value
+}
 
 fun iosIconShape(size: Dp) = RoundedCornerShape(size * IOS_ICON_CORNER_RATIO)
 
@@ -69,7 +78,15 @@ fun animateIosPressScale(
     pressed: Boolean,
     label: String,
     pressedScale: Float = IOS_PRESSED_SCALE,
-): Float = animateFloatAsState(
+): Float = rememberIosPressScale(pressed, label, pressedScale).value
+
+/** 描画だけに使う押下スケールは、Stateを渡してdraw/layerまで読み取りを遅らせる。 */
+@Composable
+fun rememberIosPressScale(
+    pressed: Boolean,
+    label: String,
+    pressedScale: Float = IOS_PRESSED_SCALE,
+): State<Float> = animateFloatAsState(
     targetValue = if (pressed) pressedScale else 1f,
     animationSpec = if (pressed) {
         IosMotion.pressDownSpec
@@ -77,7 +94,7 @@ fun animateIosPressScale(
         IosMotion.pressReleaseSpec
     },
     label = label,
-).value
+)
 
 /**
  * iOSホームのD&Dに近い、沈み込み → lift → target拡大 → 着地の共通モーション。
@@ -95,7 +112,7 @@ fun rememberIosDragVisualState(
     folderReady: Boolean = false,
     label: String,
 ): IosDragVisualState {
-    val interactionScale by animateFloatAsState(
+    val interactionScale = animateFloatAsState(
         targetValue = when {
             isDragging -> 0.90f
             folderReady -> 1.065f
@@ -113,7 +130,7 @@ fun rememberIosDragVisualState(
         },
         label = "${label}InteractionScale",
     )
-    val sourceAlpha by animateFloatAsState(
+    val sourceAlpha = animateFloatAsState(
         targetValue = if (isDragging) IOS_DRAG_SOURCE_ALPHA else 1f,
         animationSpec = tween(
             durationMillis = if (isDragging) {
@@ -142,11 +159,14 @@ fun rememberIosDragVisualState(
         }
     }
 
-    return IosDragVisualState(
-        scale = interactionScale * landingScale.value,
-        alpha = sourceAlpha,
-        settle = settle,
-    )
+    return remember(interactionScale, landingScale, sourceAlpha, settle) {
+        IosDragVisualState(
+            interactionScale = interactionScale,
+            landingScale = landingScale.asState(),
+            sourceAlpha = sourceAlpha,
+            settle = settle,
+        )
+    }
 }
 
 /** ナビゲーションバー上で使う、半透明の丸いシンボルボタン。 */
@@ -160,7 +180,7 @@ fun IosGlassIconButton(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
+    val scale by rememberIosPressScale(
         pressed = pressed,
         pressedScale = 0.9f,
         label = "iosGlassButtonScale",

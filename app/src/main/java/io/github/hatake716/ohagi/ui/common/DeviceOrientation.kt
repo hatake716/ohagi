@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -79,9 +78,13 @@ fun PortraitStage(content: @Composable () -> Unit) {
 
 /** [LocalDeviceUprightRotation] へスプリングで追従する表示用の角度。 */
 @Composable
-fun animatedUprightRotation(): Float {
+fun animatedUprightRotation(): Float = rememberAnimatedUprightRotation().value
+
+/** レイアウトを変えない回転では、StateをgraphicsLayerから直接読む。 */
+@Composable
+internal fun rememberAnimatedUprightRotation(): State<Float> {
     val target = LocalDeviceUprightRotation.current
-    val animated by animateFloatAsState(
+    return animateFloatAsState(
         targetValue = target,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
@@ -89,7 +92,6 @@ fun animatedUprightRotation(): Float {
         ),
         label = "uprightRotation",
     )
-    return animated
 }
 
 /**
@@ -98,6 +100,6 @@ fun animatedUprightRotation(): Float {
  */
 @Composable
 fun Modifier.uprightWithDevice(): Modifier {
-    val rotation = animatedUprightRotation()
-    return graphicsLayer { rotationZ = rotation }
+    val rotation = rememberAnimatedUprightRotation()
+    return graphicsLayer { rotationZ = rotation.value }
 }

@@ -1,21 +1,31 @@
 package io.github.hatake716.ohagi.util
 
+import android.app.ActivityManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Point
 import android.net.Uri
 import android.os.Build
+import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
-import android.util.LruCache
 import android.util.Size
 import android.widget.Toast
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.scale
 import io.github.hatake716.ohagi.R
 import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.data.LayoutState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  * ホームへピン留めしたファイル/フォルダ(SAF)の取り扱い。
@@ -160,8 +170,15 @@ object FilePinUtils {
 
     // ---- サムネイル(M1) ----
 
-    /** uri 文字列キーのサムネイルキャッシュ。ホーム1画面ぶんに十分な数。 */
-    private val thumbnailCache = LruCache<String, ImageBitmap>(48)
+    @Volatile
+    private var thumbnails: FileThumbnails? = null
+
+    private fun thumbnails(context: Context): FileThumbnails = thumbnails ?: synchronized(this) {
+        thumbnails ?: FileThumbnails(
+            lowRam = context.applicationContext
+                .getSystemService(ActivityManager::class.java)?.isLowRamDevice == true,
+        ).also { thumbnails = it }
+    }
 
     /** サムネイル表示に対応する種類か(画像/動画/PDF)。それ以外は種類別アイコンで表示する。 */
     fun supportsThumbnail(mimeType: String?): Boolean = when (kindOf(mimeType)) {
@@ -170,35 +187,103 @@ object FilePinUtils {
     }
 
     /** キャッシュ済みサムネイルの同期取得(セル再利用時のちらつき防止用)。 */
-    fun cachedThumbnailOf(uriString: String): ImageBitmap? = thumbnailCache.get(uriString)
+    fun cachedThumbnailOf(context: Context, uriString: String, sizePx: Int): ImageBitmap? =
+        thumbnails(context).cache.get(ThumbnailKey(uriString, sizePx.coerceAtLeast(1)))?.image
 
     /**
-     * ピンのサムネイルを読み込む。IO を伴うため呼び出し側で IO ディスパッチャを使うこと。
+     * 同じURI/表示サイズの読込を共有し、providerのIOを1〜2本に制限する。
+     * 最後の表示側がキャンセルされると、providerへもキャンセルを伝える。
      * 実体消失・非対応プロバイダ等は null(呼び出し側が種類別アイコンへフォールバック)。
      */
-    fun thumbnailOf(
+    suspend fun thumbnailOf(
         context: Context,
         uriString: String,
         mimeType: String?,
         sizePx: Int,
     ): ImageBitmap? {
         if (!supportsThumbnail(mimeType)) return null
-        thumbnailCache.get(uriString)?.let { return it }
-        val uri = Uri.parse(uriString)
-        val bitmap = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                context.contentResolver.loadThumbnail(uri, Size(sizePx, sizePx), null)
-            } else {
-                @Suppress("DEPRECATION")
-                DocumentsContract.getDocumentThumbnail(
-                    context.contentResolver, uri, Point(sizePx, sizePx), null,
-                )
+        val appContext = context.applicationContext
+        val key = ThumbnailKey(uriString, sizePx.coerceAtLeast(1))
+        return thumbnails(appContext).cache.getOrLoad(key) {
+            var bitmap = loadProviderThumbnail(appContext, key) ?: return@getOrLoad null
+            try {
+                currentCoroutineContext().ensureActive()
+                val (width, height) = thumbnailDimensions(bitmap.width, bitmap.height, key.sizePx)
+                if (bitmap.width != width || bitmap.height != height) {
+                    // 表示に十分な解像度と縦横比を保ち、providerの過大な画像を保持しない。
+                    val scaled = bitmap.scale(width, height, true)
+                    if (scaled !== bitmap) {
+                        bitmap.recycle()
+                        bitmap = scaled
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                bitmap.prepareToDraw()
+                CachedThumbnail(bitmap.asImageBitmap(), bitmap.allocationByteCount.toLong())
+            } catch (cancelled: CancellationException) {
+                // まだcacheやComposeへ公開していないBitmapだけを解放する。
+                bitmap.recycle()
+                throw cancelled
+            } catch (_: Exception) {
+                bitmap.recycle()
+                null
             }
-        }.getOrNull() ?: return null
-        val image = bitmap.asImageBitmap()
-        thumbnailCache.put(uriString, image)
-        return image
+        }?.image
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun loadProviderThumbnail(context: Context, key: ThumbnailKey): Bitmap? =
+        suspendCancellableCoroutine { continuation ->
+            val cancellationSignal = CancellationSignal()
+            continuation.invokeOnCancellation { cancellationSignal.cancel() }
+            try {
+                val uri = Uri.parse(key.uri)
+                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    context.contentResolver.loadThumbnail(
+                        uri, Size(key.sizePx, key.sizePx), cancellationSignal,
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    DocumentsContract.getDocumentThumbnail(
+                        context.contentResolver, uri, Point(key.sizePx, key.sizePx), cancellationSignal,
+                    )
+                }
+                continuation.resume(bitmap) { bitmap?.recycle() }
+            } catch (cancelled: CancellationException) {
+                continuation.cancel(cancelled)
+            } catch (_: Exception) {
+                // 失敗結果はキャッシュしない。再訪・SD再装着後は同じURIを再試行できる。
+                if (continuation.isActive) continuation.resume(null)
+            }
+        }
+
+    @Suppress("DEPRECATION")
+    fun trimThumbnailMemory(level: Int) {
+        val current = thumbnails ?: return
+        val target = when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> 0L
+            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ->
+                if (current.lowRam) 512L * 1024 else 2L * 1024 * 1024
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> 512L * 1024
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 1024L * 1024
+            else -> return
+        }
+        current.cache.trimTo(target)
+    }
+
+    fun clearThumbnailCache() {
+        thumbnails?.cache?.trimTo(0)
+    }
+
+    private class FileThumbnails(val lowRam: Boolean) {
+        val cache = ThumbnailCache<ThumbnailKey, CachedThumbnail>(
+            maxBytes = (if (lowRam) 2L else 4L) * 1024 * 1024,
+            maxParallelLoads = if (lowRam) 1 else 2,
+            sizeOf = CachedThumbnail::bytes,
+        )
+    }
+
+    private data class CachedThumbnail(val image: ImageBitmap, val bytes: Long)
 
     /** 永続許可数が上限に近ければ警告トーストを出す(追加自体は妨げない)。 */
     fun warnIfNearPermissionLimit(context: Context) {

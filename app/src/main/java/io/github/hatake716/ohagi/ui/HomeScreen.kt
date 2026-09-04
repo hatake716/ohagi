@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -46,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +59,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
@@ -862,7 +865,7 @@ fun HomeScreen(
                     scaleY = scale
                 }
                 .clip(RoundedCornerShape(24.dp))
-                .background(trashColor)
+                .drawBehind { drawRect(trashColor) }
                 .ohagiDropTarget(
                     target = trashTarget,
                     accept = { event -> event.isOhagiRemovableDrag() },
@@ -1066,23 +1069,25 @@ fun HomeScreen(
             }
         }
 
-        val pagerPosition = pagerState.currentPage + pagerState.currentPageOffsetFraction
-        val homeSurfaceVisibility = iosHomeSurfaceVisibility(
-            pagerPosition = pagerPosition,
-            homePageCount = layout.homePageCount,
-        )
+        // fractional offsetは描画フェーズでのみ読む。指の移動ごとにHomeScreen全体を
+        // 再composeせず、Dockとページドットのlayerだけを更新する。
+        val homePageCount = layout.homePageCount
         val composeHomeChrome = pagerState.isScrollInProgress ||
-            pagerState.currentPage in 1..layout.homePageCount
+            pagerState.currentPage in 1..homePageCount
 
-        if (layout.homePageCount > 1 && composeHomeChrome) {
+        if (homePageCount > 1 && composeHomeChrome) {
             HomePageIndicator(
-                pageCount = layout.homePageCount,
-                pagePosition = pagerPosition - PRIMARY_HOME_PAGER_INDEX,
+                pageCount = homePageCount,
+                pagerState = pagerState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(bottom = HOME_PAGE_INDICATOR_BOTTOM)
                     .graphicsLayer {
+                        val homeSurfaceVisibility = iosHomeSurfaceVisibility(
+                            pagerPosition = pagerState.currentPage + pagerState.currentPageOffsetFraction,
+                            homePageCount = homePageCount,
+                        )
                         alpha = homeSurfaceVisibility
                         translationY = (1f - homeSurfaceVisibility) * dockHiddenOffsetPx * 0.45f
                     },
@@ -1124,6 +1129,10 @@ fun HomeScreen(
                     .navigationBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 10.dp)
                     .graphicsLayer {
+                        val homeSurfaceVisibility = iosHomeSurfaceVisibility(
+                            pagerPosition = pagerState.currentPage + pagerState.currentPageOffsetFraction,
+                            homePageCount = homePageCount,
+                        )
                         alpha = homeSurfaceVisibility
                         translationY = (1f - homeSurfaceVisibility) * dockHiddenOffsetPx
                         val scale = 0.96f + 0.04f * homeSurfaceVisibility
@@ -1544,10 +1553,16 @@ private fun RenameFolderDialog(
 @Composable
 private fun HomePageIndicator(
     pageCount: Int,
-    pagePosition: Float,
+    pagerState: PagerState,
     modifier: Modifier = Modifier,
 ) {
-    val selectedPage = pagePosition.roundToInt().coerceIn(0, pageCount - 1)
+    // 読み上げ内容は選択ページが変わった時だけ再計算し、小数位置は各dotのlayerで読む。
+    val selectedPage by remember(pagerState, pageCount) {
+        derivedStateOf {
+            (pagerState.currentPage + pagerState.currentPageOffsetFraction - PRIMARY_HOME_PAGER_INDEX)
+                .roundToInt().coerceIn(0, pageCount - 1)
+        }
+    }
     val description = stringResource(
         R.string.home_page_description,
         selectedPage + 1,
@@ -1563,11 +1578,13 @@ private fun HomePageIndicator(
             .padding(horizontal = 8.dp, vertical = 5.dp),
     ) {
         repeat(pageCount) { page ->
-            val proximity = 1f - (page - pagePosition).absoluteValue.coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .size(7.dp)
                     .graphicsLayer {
+                        val pagePosition = pagerState.currentPage +
+                            pagerState.currentPageOffsetFraction - PRIMARY_HOME_PAGER_INDEX
+                        val proximity = 1f - (page - pagePosition).absoluteValue.coerceIn(0f, 1f)
                         alpha = 0.42f + 0.58f * proximity
                         val scale = 0.86f + 0.14f * proximity
                         scaleX = scale

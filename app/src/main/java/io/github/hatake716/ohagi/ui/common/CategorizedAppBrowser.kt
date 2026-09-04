@@ -334,7 +334,7 @@ private fun FrequentAppCell(
     var iconBounds by remember(app.ref) { androidx.compose.runtime.mutableStateOf<Rect?>(null) }
     val interactionSource = remember(app.ref) { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
+    val scale by rememberIosPressScale(
         pressed = pressed,
         label = "frequentAppScale",
     )
@@ -466,7 +466,7 @@ private fun CategoryCard(
     val cardShape = RoundedCornerShape(24.dp)
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
+    val scale by rememberIosPressScale(
         pressed = pressed,
         pressedScale = 0.975f,
         label = "appCategoryCardScale",
@@ -607,7 +607,7 @@ private fun CategoryPreviewIcon(
     var iconBounds by remember(app.ref) { androidx.compose.runtime.mutableStateOf<Rect?>(null) }
     val interactionSource = remember(app.ref) { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale = animateIosPressScale(
+    val scale by rememberIosPressScale(
         pressed = pressed,
         label = "categoryPreviewIconScale",
     )

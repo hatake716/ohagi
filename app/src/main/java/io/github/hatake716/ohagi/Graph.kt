@@ -5,6 +5,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import io.github.hatake716.ohagi.data.AppRepository
 import io.github.hatake716.ohagi.data.LayoutRepository
 import io.github.hatake716.ohagi.data.UsageRepository
+import io.github.hatake716.ohagi.util.FilePinUtils
 import io.github.hatake716.ohagi.widget.WidgetHostController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,11 +71,15 @@ class Graph(context: Context) {
     }
 
     fun trimMemory(level: Int) {
+        widgetHost.trimMemory(level)
         appRepository.trimMemory(level)
+        FilePinUtils.trimThumbnailMemory(level)
     }
 
     fun clearMemoryCaches() {
+        widgetHost.clearUnusedViews()
         appRepository.clearIconCache()
+        FilePinUtils.clearThumbnailCache()
     }
 }
 

@@ -5,6 +5,7 @@ import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +14,8 @@ import android.util.Log
 import android.util.SizeF
 import io.github.hatake716.ohagi.data.WidgetPlacement
 import java.lang.ref.WeakReference
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
@@ -21,11 +24,17 @@ class WidgetHostController(context: Context) {
 
     private val appContext = context.applicationContext
     private val manager = AppWidgetManager.getInstance(appContext)
-    private val host = AppWidgetHost(appContext, HOST_ID)
+    private val host = ReleasableWidgetHost(appContext)
     // Pagerから一度外れた直後の再入場では、まだ生存しているRemoteViewsを再利用する。
-    // WeakReferenceなので非表示Widgetや古いActivityをRAMへ固定しない。
+    // AppWidgetHost自身も作成済みViewを強参照する。通常のページ往復では
+    // ウィジェット内のスクロール位置も維持し、実メモリ圧迫時だけ参照を解放する。
     private val reusableViews = ConcurrentHashMap<Int, WeakReference<AppWidgetHostView>>()
     private val lastWidgetSizes = ConcurrentHashMap<Int, WidgetSize>()
+    // createView / AndroidView.onReleaseはいずれもメインスレッドから呼ばれる。
+    private val activeViews = Collections.newSetFromMap(
+        IdentityHashMap<AppWidgetHostView, Boolean>(),
+    )
+    private var releaseWhenUnused = false
 
     fun startListening() {
         runCatching(host::startListening)
@@ -100,6 +109,7 @@ class WidgetHostController(context: Context) {
     ): AppWidgetHostView {
         reusableViews[appWidgetId]?.get()?.let { cached ->
             if (cached.context === context && cached.parent == null) {
+                activeViews.add(cached)
                 return cached
             }
         }
@@ -107,7 +117,41 @@ class WidgetHostController(context: Context) {
             setAppWidget(appWidgetId, info)
             setPadding(0, 0, 0, 0)
             reusableViews[appWidgetId] = WeakReference(this)
+            activeViews.add(this)
         }
+    }
+
+    /**
+     * 通常のページ往復ではViewを再利用する。メモリ圧迫通知を受けている場合も
+     * 表示中のViewには触れず、最後のViewが外れるまで解放を待つ。
+     */
+    fun releaseView(view: AppWidgetHostView) {
+        if (!activeViews.remove(view) || activeViews.isNotEmpty() || !releaseWhenUnused) return
+        clearUnusedViews()
+    }
+
+    @Suppress("DEPRECATION")
+    fun trimMemory(level: Int) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND ||
+            level in ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW..ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        ) {
+            clearUnusedViews()
+        }
+    }
+
+    /** IDとバインドは保持し、再生成可能な非表示RemoteViewsだけを解放する。 */
+    fun clearUnusedViews() {
+        releaseWhenUnused = true
+        if (activeViews.isNotEmpty()) return
+        host.releaseViewReferences()
+        reusableViews.clear()
+        // 再生成したHostViewにも同じ寸法を通知できるようにする。
+        lastWidgetSizes.clear()
+        releaseWhenUnused = false
+    }
+
+    private class ReleasableWidgetHost(context: Context) : AppWidgetHost(context, HOST_ID) {
+        fun releaseViewReferences() = clearViews()
     }
 
     @Suppress("DEPRECATION")

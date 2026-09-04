@@ -21,9 +21,9 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,8 +43,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.hatake716.ohagi.data.HomeItem
 import io.github.hatake716.ohagi.util.FilePinUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * ファイルピンのサムネイルを非同期取得する(画像/動画/PDF)。
@@ -62,14 +60,15 @@ fun rememberFilePinThumbnail(
     val context = LocalContext.current
     val sizePx = with(LocalDensity.current) { size.roundToPx() }
     // セル再利用時に前のサムネイルを1フレーム見せないよう、キャッシュを初期値に使う。
-    val cached = remember(pin.uri, sizePx) { FilePinUtils.cachedThumbnailOf(pin.uri) }
-    return produceState(initialValue = cached, pin.uri, sizePx) {
-        if (value == null) {
-            value = withContext(Dispatchers.IO) {
-                FilePinUtils.thumbnailOf(context, pin.uri, pin.mimeType, sizePx)
-            }
+    val thumbnail = remember(pin.uri, pin.mimeType, sizePx) {
+        mutableStateOf(FilePinUtils.cachedThumbnailOf(context, pin.uri, sizePx))
+    }
+    LaunchedEffect(thumbnail) {
+        if (thumbnail.value == null) {
+            thumbnail.value = FilePinUtils.thumbnailOf(context, pin.uri, pin.mimeType, sizePx)
         }
     }
+    return thumbnail
 }
 
 /**

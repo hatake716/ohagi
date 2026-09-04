@@ -56,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -87,6 +88,7 @@ import io.github.hatake716.ohagi.ui.common.rememberIosDragVisualState
 import io.github.hatake716.ohagi.ui.dragdrop.DragPayload
 import io.github.hatake716.ohagi.ui.dragdrop.folderLocationOrNull
 import io.github.hatake716.ohagi.ui.common.animatedUprightRotation
+import io.github.hatake716.ohagi.ui.common.rememberAnimatedUprightRotation
 import io.github.hatake716.ohagi.ui.common.uprightWithDevice
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDragSource
 import io.github.hatake716.ohagi.ui.dragdrop.ohagiDropTarget
@@ -228,7 +230,7 @@ fun IosFolderOverlay(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.46f * reveal.value))
+            .drawBehind { drawRect(Color.Black.copy(alpha = 0.46f * reveal.value)) }
             .ohagiDropTarget(backgroundDropTarget)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -313,7 +315,7 @@ fun IosFolderOverlay(
                 // 「ユーザーから見て上」= 左右どちらかの辺へ回転しながら移す。
                 // レイアウト位置は変えず(パネル寸法もグリッドも不変)、描画変換だけで
                 // 辺の内側中央へ移動する。ヒットテストは変換に追従するため操作も可能。
-                val uprightRotation = animatedUprightRotation()
+                val uprightRotation by rememberAnimatedUprightRotation()
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -438,15 +440,15 @@ fun IosFolderOverlay(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.height(20.dp),
             ) {
-                val pagePosition = pagerState.currentPage +
-                    pagerState.currentPageOffsetFraction
                 repeat(pageCount) { page ->
-                    val proximity = 1f -
-                        kotlin.math.abs(page - pagePosition).coerceIn(0f, 1f)
                     Box(
                         Modifier
                             .size(7.dp)
                             .graphicsLayer {
+                                val pagePosition = pagerState.currentPage +
+                                    pagerState.currentPageOffsetFraction
+                                val proximity = 1f -
+                                    kotlin.math.abs(page - pagePosition).coerceIn(0f, 1f)
                                 alpha = 0.30f + 0.65f * proximity
                                 val scale = 0.86f + 0.14f * proximity
                                 scaleX = scale
@@ -571,7 +573,7 @@ private fun FolderAppCell(
     // 通常表示中は無限アニメーションをcompositionから外し、編集時だけ揺らす。
     val wiggle = if (editMode) {
         val infiniteTransition = rememberInfiniteTransition(label = "folderWiggle")
-        val animatedWiggle by infiniteTransition.animateFloat(
+        infiniteTransition.animateFloat(
             initialValue = -1.25f,
             targetValue = 1.25f,
             animationSpec = infiniteRepeatable(
@@ -580,9 +582,8 @@ private fun FolderAppCell(
             ),
             label = "folderWiggleAngle",
         )
-        animatedWiggle
     } else {
-        0f
+        null
     }
 
     val dropTarget = rememberOhagiDropTarget(
@@ -617,7 +618,7 @@ private fun FolderAppCell(
                 scaleX = dragVisual.scale
                 scaleY = dragVisual.scale
                 alpha = dragVisual.alpha
-                rotationZ = if (editMode) wiggle else 0f
+                rotationZ = wiggle?.value ?: 0f
             }
             .clip(RoundedCornerShape(18.dp))
             .ohagiDropTarget(dropTarget)
